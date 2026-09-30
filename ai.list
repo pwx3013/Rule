@@ -1,0 +1,55 @@
+# > AI
+# 合并自 blackmatrix7/ios_rule_script（OpenAI / Claude / Anthropic / BardAI / Copilot），并补充 Meta AI 等常用 AI 服务
+# Surge / Loon 远程规则格式
+
+#OpenAI
+DOMAIN-SUFFIX,chatgpt.com
+DOMAIN-SUFFIX,openai.com
+DOMAIN-SUFFIX,ai.com
+DOMAIN-SUFFIX,oaistatic.com
+DOMAIN-SUFFIX,oaiusercontent.com
+DOMAIN-KEYWORD,openai
+
+#Claude
+DOMAIN-SUFFIX,claude.ai
+DOMAIN-SUFFIX,anthropic.com
+
+#Gemini
+DOMAIN-SUFFIX,gemini.google.com
+DOMAIN-SUFFIX,bard.google.com
+DOMAIN-SUFFIX,generativeai.google
+DOMAIN-SUFFIX,deepmind.google
+DOMAIN-SUFFIX,deepmind.com
+DOMAIN,ai.google.dev
+DOMAIN,generativelanguage.googleapis.com
+DOMAIN,makersuite.google.com
+
+#Copilot
+DOMAIN-SUFFIX,copilot.microsoft.com
+DOMAIN-SUFFIX,api.githubcopilot.com
+DOMAIN-SUFFIX,copilot-proxy.githubusercontent.com
+DOMAIN-SUFFIX,bing.com
+
+#Meta AI
+DOMAIN-SUFFIX,meta.ai
+DOMAIN-SUFFIX,api.meta.ai
+DOMAIN-SUFFIX,muse.ai
+
+#Perplexity
+DOMAIN-SUFFIX,perplexity.ai
+
+#Grok / xAI
+DOMAIN-SUFFIX,x.ai
+DOMAIN-SUFFIX,grok.com
+
+#Poe
+DOMAIN-SUFFIX,poe.com
+
+#Mistral
+DOMAIN-SUFFIX,mistral.ai
+
+#DeepSeek
+DOMAIN-SUFFIX,deepseek.com
+
+#Character.ai
+DOMAIN-SUFFIX,character.ai
