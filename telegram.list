@@ -1,0 +1,40 @@
+# > Telegram（含第三方客户端）
+# 官方部分合并自 blackmatrix7/ios_rule_script，并补充 Nicegram / Nekogram / iMe / Swiftgram 等第三方客户端域名
+# Surge / Loon 远程规则格式
+
+#官方 Telegram
+DOMAIN-SUFFIX,telegram.org
+DOMAIN-SUFFIX,telegram.me
+DOMAIN-SUFFIX,t.me
+DOMAIN-SUFFIX,telegra.ph
+DOMAIN-SUFFIX,telesco.pe
+DOMAIN-SUFFIX,tdesktop.com
+DOMAIN-SUFFIX,telegram-cdn.org
+DOMAIN-SUFFIX,cdn-telegram.org
+DOMAIN-SUFFIX,telegramdownload.com
+DOMAIN-SUFFIX,telegram.space
+DOMAIN-SUFFIX,telegram.dog
+DOMAIN-SUFFIX,telega.one
+DOMAIN-SUFFIX,graph.org
+DOMAIN-SUFFIX,quiz.directory
+DOMAIN-SUFFIX,contest.com
+DOMAIN-SUFFIX,stel.com
+DOMAIN-SUFFIX,comments.app
+DOMAIN-SUFFIX,legra.ph
+DOMAIN-SUFFIX,tx.me
+DOMAIN-SUFFIX,tg.dev
+DOMAIN-SUFFIX,usercontent.dev
+
+#Nicegram
+DOMAIN-KEYWORD,nicegram
+DOMAIN-SUFFIX,nicegram.app
+
+#Nekogram
+DOMAIN-SUFFIX,nekogram.app
+
+#iMe
+DOMAIN-SUFFIX,imem.app
+DOMAIN-SUFFIX,mbrx.app
+
+#Swiftgram
+DOMAIN-SUFFIX,swiftgram.app
