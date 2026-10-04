@@ -35,11 +35,12 @@
 #    （ECDSA P-256，10 年有效期），结束时打印各协议的客户端配置
 #
 # 客户端支持情况（2026-10）：
-#   Surge  支持 TUIC v5 / Hysteria2(基础) / Trojan / SS / VMess / AnyTLS / Socks5+HTTP，
-#           不支持 VLESS / NaiveProxy / WireGuard（通用）/ TrustTunnel
+#   Surge  支持 TUIC v5 / Hysteria2(基础) / Trojan / SS / VMess / AnyTLS / Socks5+HTTP /
+#           TrustTunnel（experimental，Mac 6.4.4+，只走 HTTP/2 over TCP），
+#           不支持 VLESS / NaiveProxy / WireGuard（通用）
 #   Egern  除 NaiveProxy / TrustTunnel 外全支持
-#   TrustTunnel 客户端：AdGuard 官方 TrustTunnel App（iOS/Android，可连自建服务器；
-#           注意手机 App 不认自签证书，要用 iOS App 需换成 Let's Encrypt 证书）
+#   TrustTunnel 另有：Shadowrocket、AdGuard 官方 TrustTunnel App（iOS/Android；
+#           注意手机 App 不认自签证书，要用它需换成 Let's Encrypt 证书）
 set -euo pipefail
 
 SNI="${SNI:-www.bing.com}"
@@ -470,13 +471,14 @@ MB-TROJAN = trojan, ${HOST}, ${TROJAN_PORT}, password=${PASSWORD}, sni=${SNI}, s
 MB-SS     = ss, ${HOST}, ${SS_PORT}, encrypt-method=2022-blake3-aes-128-gcm, password=${SS_PASSWORD}, udp-relay=true
 MB-VMESS  = vmess, ${HOST}, ${VMESS_PORT}, username=${UUID}, tls=true, skip-cert-verify=true
 MB-SOCKS  = socks5, ${HOST}, ${MIXED_PORT}, username=${MIXED_USER}, password=${PASSWORD}
+MB-TT     = trust-tunnel, ${HOST}, ${TT_PORT}, username=${MIXED_USER}, password=${PASSWORD}, sni=${SNI}, alpn=h2, skip-cert-verify=true
 # Hysteria2：Surge 仅基础支持，建议用下面的 hy2:// 链接导入或在 Egern 里配
 # AnyTLS：Surge/Egern 均支持，用下面的 anytls:// 链接导入
 # VLESS：Surge 不支持，用 Egern（下面的 vless:// 链接）
 # Naive：iOS 暂无客户端，用桌面端 sing-box
 # WireGuard：用官方 WireGuard App 或 Egern，按下方参数填
-# TrustTunnel：用 AdGuard 官方 TrustTunnel App（iOS/Android）连自建服务器，
-#   按下方参数填；注意手机 App 不认自签证书，要用它需换成 Let's Encrypt 证书
+# TrustTunnel：Surge 为 experimental 支持（只走 TCP/H2），Shadowrocket 也支持；
+#   AdGuard 官方 App 不认自签证书，要用它需换成 Let's Encrypt 证书
 
 ----- 通用链接（Egern / Shadowrocket 等粘贴导入）-----
 tuic://${UUID}:${PASSWORD}@${HOST}:${TUIC_PORT}?sni=${SNI}&alpn=h3&congestion_control=bbr#MB-TUIC
@@ -497,11 +499,12 @@ ss://$(echo -n "2022-blake3-aes-128-gcm:${SS_PASSWORD}" | base64 | tr -d '\n')@$
   Naive：${HOST}:${NAIVE_PORT}，用户名 ${MIXED_USER}，密码见下方，TLS SNI=${SNI}（跳过证书验证）
   混合：${HOST}:${MIXED_PORT}，HTTP/Socks5 通吃，用户名 ${MIXED_USER}
 
------ TrustTunnel 参数（AdGuard 官方 TrustTunnel App）-----
+----- TrustTunnel 参数 -----
+  Surge（experimental，TCP/H2）：上面的 MB-TT 行直接粘贴到 [Proxy]
   服务器：${HOST}    端口：${TT_PORT}（TCP+UDP）
   用户名：${MIXED_USER}
   密码：${PASSWORD}
-  TLS SNI：${SNI}（自签证书；手机 App 不认自签，需换 Let's Encrypt 证书才能用）
+  TLS SNI：${SNI}（自签证书；AdGuard 手机 App 不认自签，需换 Let's Encrypt 证书才能用）
 
 ----- 原始参数 -----
   服务器：${HOST}
