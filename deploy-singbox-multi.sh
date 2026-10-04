@@ -228,6 +228,14 @@ add_inbound() { # $1: JSON 片段（调用处已展开变量）
 $1"
 }
 
+# WireGuard 在 sing-box >= 1.11 是 endpoint 类型，不再是 inbound
+ENDPOINTS=""
+add_endpoint() { # $1: JSON 片段（调用处已展开变量）
+  if [ -n "$ENDPOINTS" ]; then ENDPOINTS="$ENDPOINTS,"; fi
+  ENDPOINTS="$ENDPOINTS
+$1"
+}
+
 if is_enabled hy2; then
   add_inbound "$(cat <<EOF
     {
@@ -380,17 +388,17 @@ EOF
 fi
 
 if is_enabled wg; then
-  add_inbound "$(cat <<EOF
+  add_endpoint "$(cat <<EOF
     {
       "type": "wireguard",
-      "tag": "wg-in",
-      "listen": "::",
-      "listen_port": ${WG_PORT},
+      "tag": "wg-ep",
+      "address": ["10.0.0.1/32"],
       "private_key": "${WG_SERVER_PRIV}",
+      "listen_port": ${WG_PORT},
       "peers": [
         {
           "public_key": "${WG_CLIENT_PUB}",
-          "allowed_ips": ["0.0.0.0/0", "::/0"]
+          "allowed_ips": ["0.0.0.0/0"]
         }
       ]
     }
@@ -416,6 +424,8 @@ cat > "$CONF/config.json" <<EOF
 {
   "log": { "level": "warn" },
   "inbounds": [${INBOUNDS}
+  ],
+  "endpoints": [${ENDPOINTS}
   ],
   "outbounds": [{ "type": "direct", "tag": "direct" }],
   "route": { "final": "direct" }
@@ -545,6 +555,7 @@ if is_enabled wg; then
 WG_SECTION="$(cat <<EOF
 ----- WireGuard 参数（Egern / 官方 App）-----
   服务器：${HOST}    端口：${WG_PORT}（UDP）
+  客户端地址：10.0.0.2/32
   客户端私钥：${WG_CLIENT_PRIV}
   服务端公钥：${WG_SERVER_PUB}
   允许 IP：0.0.0.0/0, ::/0
