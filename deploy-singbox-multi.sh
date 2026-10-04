@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # sing-box 多协议节点 Docker 一键部署
-# 一次起 10 个协议：
+# 一次起 11 个协议：
 #   Hysteria2 / TUIC v5 / Trojan / VLESS / Shadowsocks2022 /
-#   AnyTLS / VMess / NaiveProxy / WireGuard / HTTP+Socks5 混合
+#   AnyTLS / VMess / NaiveProxy / WireGuard / HTTP+Socks5 混合 / TrustTunnel
+#
+# 前 10 个跑官方 sing-box 镜像；TrustTunnel 官方没有，只有第三方 fork
+# （shtorm-7/sing-box-extended）才有。没有可用的预编译二进制，脚本在 VPS 上
+# 从 fork 源码编译（pin 到 commit 5956780，已验证），单独跑一个服务。
 #
 # 用法（root）：
 #   bash deploy-singbox-multi.sh
@@ -20,6 +24,7 @@
 #   NAIVE_PORT        NaiveProxy 监听 TCP 端口（默认 35443）
 #   WG_PORT           WireGuard 监听 UDP 端口（默认 45443）
 #   MIXED_PORT        HTTP/Socks5 混合监听 TCP 端口（默认 46443）
+#   TT_PORT           TrustTunnel 监听 TCP+UDP 端口（默认 47443）
 #   SNI               TLS SNI（默认 www.bing.com）
 #   SING_BOX_VERSION  镜像版本（默认 v1.14.2，支持 arm64；AnyTLS 需 >= 1.12）
 #
@@ -31,8 +36,10 @@
 #
 # 客户端支持情况（2026-10）：
 #   Surge  支持 TUIC v5 / Hysteria2(基础) / Trojan / SS / VMess / AnyTLS / Socks5+HTTP，
-#           不支持 VLESS / NaiveProxy / WireGuard（通用）
-#   Egern  除 NaiveProxy 外全支持
+#           不支持 VLESS / NaiveProxy / WireGuard（通用）/ TrustTunnel
+#   Egern  除 NaiveProxy / TrustTunnel 外全支持
+#   TrustTunnel 客户端：AdGuard 官方 TrustTunnel App（iOS/Android，可连自建服务器；
+#           注意手机 App 不认自签证书，要用 iOS App 需换成 Let's Encrypt 证书）
 set -euo pipefail
 
 SNI="${SNI:-www.bing.com}"
@@ -109,8 +116,9 @@ VMESS_PORT="${VMESS_PORT:-${VMESS_PORT_SAVED:-25443}}"
 NAIVE_PORT="${NAIVE_PORT:-${NAIVE_PORT_SAVED:-35443}}"
 WG_PORT="${WG_PORT:-${WG_PORT_SAVED:-45443}}"
 MIXED_PORT="${MIXED_PORT:-${MIXED_PORT_SAVED:-46443}}"
+TT_PORT="${TT_PORT:-${TT_PORT_SAVED:-47443}}"
 for p in "$HY2_PORT" "$TUIC_PORT" "$TROJAN_PORT" "$VLESS_PORT" "$SS_PORT" \
-         "$ANYTLS_PORT" "$VMESS_PORT" "$NAIVE_PORT" "$WG_PORT" "$MIXED_PORT"; do
+         "$ANYTLS_PORT" "$VMESS_PORT" "$NAIVE_PORT" "$WG_PORT" "$MIXED_PORT" "$TT_PORT"; do
   [[ "$p" =~ ^[0-9]+$ ]] && [ "$p" -ge 1 ] && [ "$p" -le 65535 ] \
     || die "端口无效：$p"
 done
@@ -136,6 +144,7 @@ VMESS_PORT_SAVED=${VMESS_PORT}
 NAIVE_PORT_SAVED=${NAIVE_PORT}
 WG_PORT_SAVED=${WG_PORT}
 MIXED_PORT_SAVED=${MIXED_PORT}
+TT_PORT_SAVED=${TT_PORT}
 EOF
 chmod 600 "$META"
 
@@ -152,6 +161,7 @@ check_tcp "$VMESS_PORT"
 check_tcp "$NAIVE_PORT"
 check_tcp "$MIXED_PORT"
 check_tcp "$SS_PORT"; check_udp "$SS_PORT"
+check_tcp "$TT_PORT"; check_udp "$TT_PORT"
 
 # ---- sing-box 配置 ----
 cat > "$CONF/config.json" <<EOF
@@ -288,6 +298,101 @@ cat > "$CONF/config.json" <<EOF
 EOF
 chmod 600 "$CONF/config.json"
 
+# ================= TrustTunnel（第 11 个协议，fork 源码编译独立服务）=================
+# 官方 sing-box 没有 TrustTunnel，只有第三方 fork（shtorm-7/sing-box-extended）有。
+# 没有可用的预编译二进制，脚本在 VPS 上从源码编译（pin 到验证过的 commit）。
+TT_BIN_DIR="$DIR/bin"
+TT_BIN="$TT_BIN_DIR/sing-box-extended"
+TT_IMAGE="singbox-extended:local"
+TT_SRC="$DIR/src/sing-box-extended"
+TT_COMMIT="5956780"   # 已验证含 TrustTunnel inbound 的 commit
+TT_TAGS="with_gvisor,with_quic,with_dhcp,with_wireguard,with_utls,with_acme,with_clash_api,with_tailscale,with_manager,with_masque,with_mtproxy,with_ccm,with_ocm,with_trusttunnel,with_call,with_sudoku,with_cloudflared,with_usbip,with_openvpn,with_openconnect,badlinkname,tfogo_checklinkname0"
+GO_DIR="/usr/local/go"
+
+# 清理残留的旧容器
+if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx singbox-trusttunnel; then
+  log "清理已存在的 singbox-trusttunnel 容器…"
+  docker rm -f singbox-trusttunnel >/dev/null 2>&1 || true
+fi
+
+if [[ ! -x "$TT_BIN" ]]; then
+  # ---- Go 工具链（fork 要求 go >= 1.26）----
+  if ! command -v go >/dev/null 2>&1 || ! go version 2>/dev/null | grep -Eq "go1\.(2[6-9]|[3-9][0-9])"; then
+    log "安装 Go 1.26 工具链…"
+    case "$(uname -m)" in
+      x86_64) GO_ARCH="amd64" ;;
+      aarch64) GO_ARCH="arm64" ;;
+      *) die "不支持的架构：$(uname -m)" ;;
+    esac
+    curl -fsSL --max-time 180 -o /tmp/go.tgz "https://go.dev/dl/go1.26.4.linux-${GO_ARCH}.tar.gz" \
+      || die "Go 下载失败（检查 go.dev 连通性）"
+    rm -rf "$GO_DIR" && tar -C /usr/local -xzf /tmp/go.tgz && rm -f /tmp/go.tgz
+    export PATH="$GO_DIR/bin:$PATH"
+    go version || die "Go 安装失败"
+  fi
+  command -v git >/dev/null 2>&1 || die "未找到 git，请先安装 git（apt install -y git）"
+
+  # ---- 拉源码（pin 到验证过的 commit）----
+  log "获取 sing-box-extended 源码…"
+  rm -rf "$TT_SRC"; mkdir -p "$TT_SRC"
+  git -C "$TT_SRC" init -q
+  git -C "$TT_SRC" remote add origin https://github.com/shtorm-7/sing-box-extended.git
+  git -C "$TT_SRC" fetch --depth 1 origin "$TT_COMMIT" || die "源码获取失败"
+  git -C "$TT_SRC" checkout -q FETCH_HEAD
+
+  # ---- 编译（约 10 分钟，一次性；二进制复用，重复运行跳过）----
+  log "编译 TrustTunnel 二进制（约 10 分钟，第一次才需要）…"
+  mkdir -p "$TT_BIN_DIR" "$DIR/gotmp" "$DIR/gocache"
+  ( cd "$TT_SRC" && \
+    CGO_ENABLED=0 GOTMPDIR="$DIR/gotmp" GOCACHE="$DIR/gocache" \
+    PATH="$GO_DIR/bin:$PATH" \
+    go build -trimpath -ldflags="-s -w" -tags "$TT_TAGS" -o "$TT_BIN" ./cmd/sing-box ) \
+    || die "TrustTunnel 编译失败"
+  chmod +x "$TT_BIN"
+  log "编译完成"
+else
+  log "复用已编译的 TrustTunnel 二进制…"
+fi
+
+# TrustTunnel 独立配置（只跑这一个 inbound）
+cat > "$CONF/tt-config.json" <<EOF
+{
+  "log": { "level": "warn" },
+  "inbounds": [
+    {
+      "type": "trusttunnel",
+      "tag": "tt-in",
+      "listen": "::",
+      "listen_port": ${TT_PORT},
+      "users": [{ "name": "${MIXED_USER}", "password": "${PASSWORD}" }],
+      "network": ["tcp", "udp"],
+      "tls": {
+        "enabled": true,
+        "server_name": "${SNI}",
+        "certificate_path": "/etc/sing-box/cert.pem",
+        "key_path": "/etc/sing-box/key.pem"
+      }
+    }
+  ],
+  "outbounds": [{ "type": "direct", "tag": "direct" }],
+  "route": { "final": "direct" }
+}
+EOF
+chmod 600 "$CONF/tt-config.json"
+
+# 用下载的二进制直接预检（静态二进制，无需 docker）
+log "预检 TrustTunnel 配置…"
+"$TT_BIN" check -c "$CONF/tt-config.json" || die "TrustTunnel 配置校验未通过"
+
+# 给 fork 二进制打一个最小镜像（scratch + 二进制）
+cat > "$DIR/Dockerfile.tt" <<'DOCKEREOF'
+FROM scratch
+COPY bin/sing-box-extended /usr/local/bin/sing-box
+ENTRYPOINT ["/usr/local/bin/sing-box"]
+DOCKEREOF
+log "构建 TrustTunnel 镜像…"
+docker build -q -f "$DIR/Dockerfile.tt" -t "$TT_IMAGE" "$DIR" || die "TrustTunnel 镜像构建失败"
+
 # ---- docker-compose.yml ----
 cat > "$DIR/docker-compose.yml" <<EOF
 services:
@@ -299,6 +404,14 @@ services:
     volumes:
       - ./conf:/etc/sing-box
     command: ["run", "-c", "/etc/sing-box/config.json"]
+  sing-box-tt:
+    image: ${TT_IMAGE}
+    container_name: singbox-trusttunnel
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./conf:/etc/sing-box
+    command: ["run", "-c", "/etc/sing-box/tt-config.json"]
 EOF
 
 # ---- 预检配置 ----
@@ -324,23 +437,28 @@ if command -v iptables >/dev/null 2>&1; then
   for proto in tcp udp; do
     iptables -C INPUT -p $proto --dport "$SS_PORT" -j ACCEPT 2>/dev/null \
       || iptables -I INPUT -p $proto --dport "$SS_PORT" -j ACCEPT 2>/dev/null || true
+    iptables -C INPUT -p $proto --dport "$TT_PORT" -j ACCEPT 2>/dev/null \
+      || iptables -I INPUT -p $proto --dport "$TT_PORT" -j ACCEPT 2>/dev/null || true
   done
 fi
 
 docker ps --filter name=singbox-multi --format '{{.Status}}' | grep -qi up \
   || { docker logs singbox-multi --tail 30; die "容器未正常运行，见上方日志"; }
+docker ps --filter name=singbox-trusttunnel --format '{{.Status}}' | grep -qi up \
+  || { docker logs singbox-trusttunnel --tail 30; die "TrustTunnel 容器未正常运行，见上方日志"; }
 
 HOST="$(curl -fsSL --max-time 8 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')"
 
 cat <<DONE
 
 ======================================================================
- sing-box 十协议节点 (Docker) 部署完成
+ sing-box 十一协议节点 (Docker) 部署完成
   监听：HY2 UDP ${HY2_PORT} / TUIC UDP ${TUIC_PORT} / Trojan TCP ${TROJAN_PORT}
         VLESS TCP ${VLESS_PORT} / SS TCP+UDP ${SS_PORT}
         AnyTLS TCP ${ANYTLS_PORT} / VMess TCP ${VMESS_PORT} / Naive TCP ${NAIVE_PORT}
         WireGuard UDP ${WG_PORT} / 混合 TCP ${MIXED_PORT}
-  镜像：${IMAGE}
+        TrustTunnel TCP+UDP ${TT_PORT}（fork 二进制独立服务）
+  镜像：${IMAGE} + ${TT_IMAGE}（fork 编译版）
   配置：${CONF}/config.json
   凭据：${META}
   运维：cd ${DIR} && docker compose {logs,restart,down}
@@ -357,6 +475,8 @@ MB-SOCKS  = socks5, ${HOST}, ${MIXED_PORT}, username=${MIXED_USER}, password=${P
 # VLESS：Surge 不支持，用 Egern（下面的 vless:// 链接）
 # Naive：iOS 暂无客户端，用桌面端 sing-box
 # WireGuard：用官方 WireGuard App 或 Egern，按下方参数填
+# TrustTunnel：用 AdGuard 官方 TrustTunnel App（iOS/Android）连自建服务器，
+#   按下方参数填；注意手机 App 不认自签证书，要用它需换成 Let's Encrypt 证书
 
 ----- 通用链接（Egern / Shadowrocket 等粘贴导入）-----
 tuic://${UUID}:${PASSWORD}@${HOST}:${TUIC_PORT}?sni=${SNI}&alpn=h3&congestion_control=bbr#MB-TUIC
@@ -377,13 +497,19 @@ ss://$(echo -n "2022-blake3-aes-128-gcm:${SS_PASSWORD}" | base64 | tr -d '\n')@$
   Naive：${HOST}:${NAIVE_PORT}，用户名 ${MIXED_USER}，密码见下方，TLS SNI=${SNI}（跳过证书验证）
   混合：${HOST}:${MIXED_PORT}，HTTP/Socks5 通吃，用户名 ${MIXED_USER}
 
+----- TrustTunnel 参数（AdGuard 官方 TrustTunnel App）-----
+  服务器：${HOST}    端口：${TT_PORT}（TCP+UDP）
+  用户名：${MIXED_USER}
+  密码：${PASSWORD}
+  TLS SNI：${SNI}（自签证书；手机 App 不认自签，需换 Let's Encrypt 证书才能用）
+
 ----- 原始参数 -----
   服务器：${HOST}
   UUID：${UUID}（TUIC / VLESS / VMess 用）
-  密码：${PASSWORD}（HY2 / Trojan / TUIC / AnyTLS / Naive / 混合 用）
+  密码：${PASSWORD}（HY2 / Trojan / TUIC / AnyTLS / Naive / 混合 / TrustTunnel 用）
   SS 密钥：${SS_PASSWORD}（base64，Shadowsocks 2022 用）
   SNI：${SNI}
   证书：自签，客户端需开"跳过证书验证"
 ======================================================================
 DONE
-echo "云控制台必做：安全组放行 入站 TCP ${TROJAN_PORT},${VLESS_PORT},${SS_PORT},${ANYTLS_PORT},${VMESS_PORT},${NAIVE_PORT},${MIXED_PORT} 与 UDP ${HY2_PORT},${TUIC_PORT},${SS_PORT},${WG_PORT}"
+echo "云控制台必做：安全组放行 入站 TCP ${TROJAN_PORT},${VLESS_PORT},${SS_PORT},${ANYTLS_PORT},${VMESS_PORT},${NAIVE_PORT},${MIXED_PORT},${TT_PORT} 与 UDP ${HY2_PORT},${TUIC_PORT},${SS_PORT},${WG_PORT},${TT_PORT}"
