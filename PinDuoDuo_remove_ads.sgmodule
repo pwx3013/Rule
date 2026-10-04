@@ -1,0 +1,17 @@
+#!name=拼多多去广告
+#!desc=移除开屏广告、底栏多多视频、会场入口、聊天页面精选推荐及推广，精简首页和个人中心。
+#!author=RuCu6, ZenmoFeiShi, 可莉
+#!icon=https://raw.githubusercontent.com/luestr/IconResource/main/App_icon/120px/PinDuoDuo.png
+
+[Rule]
+# 拦截拼多多开屏广告（IP 直连的广告资源），原 Loon 插件两条 AND 规则
+# 注：IPv6 那条原正则含逗号量词（如 {1,4}），Surge 规则解析不支持，此处改写为等效简化版
+AND,((URL-REGEX,^http:\/\/((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\/d(\d)?),(USER-AGENT,*com.xunmeng.pinduoduo*)),REJECT
+AND,((URL-REGEX,^http:\/\/\[([0-9A-Fa-f]+:)+[0-9A-Fa-f:.]*\]\/d(\d)?\?),(USER-AGENT,*com.xunmeng.pinduoduo*)),REJECT
+
+[Script]
+# 对应原 Loon 插件两条 response-body-json-* Rewrite（Surge 无等效重写动作，改用脚本实现）
+拼多多去广告 = type=http-response,pattern=^https:\/\/api\.pinduoduo\.com\/api\/alexa\/homepage\/hub\?,requires-body=true,script-path=https://raw.githubusercontent.com/pwx3013/Rule/main/PinDuoDuo_remove_ads.js,timeout=10
+
+[MITM]
+hostname = %APPEND%, api.pinduoduo.com
