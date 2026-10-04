@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 # sing-box 多协议节点 Docker 一键部署
-# 一次起 11 个协议：
+# 一次起最多 10 个协议（DISABLE 可关闭不需要的）：
 #   Hysteria2 / TUIC v5 / Trojan / VLESS / Shadowsocks2022 /
-#   AnyTLS / VMess / NaiveProxy / WireGuard / HTTP+Socks5 混合 / TrustTunnel
+#   AnyTLS / VMess / NaiveProxy / WireGuard / HTTP+Socks5 混合
 #
-# 前 10 个跑官方 sing-box 镜像；TrustTunnel 官方没有，只有第三方 fork
-# （shtorm-7/sing-box-extended）才有。没有可用的预编译二进制，脚本在 VPS 上
-# 从 fork 源码编译（pin 到 commit 5956780，已验证），单独跑一个服务。
+# 全部跑官方 sing-box 镜像（ghcr.io/sagernet/sing-box）。
 #
 # 用法（root）：
 #   bash deploy-singbox-multi.sh
@@ -24,23 +22,34 @@
 #   NAIVE_PORT        NaiveProxy 监听 TCP 端口（默认 35443）
 #   WG_PORT           WireGuard 监听 UDP 端口（默认 45443）
 #   MIXED_PORT        HTTP/Socks5 混合监听 TCP 端口（默认 46443）
-#   TT_PORT           TrustTunnel 监听 TCP+UDP 端口（默认 47443）
 #   SNI               TLS SNI（默认 www.bing.com）
 #   SING_BOX_VERSION  镜像版本（默认 v1.14.2，支持 arm64；AnyTLS 需 >= 1.12）
+#   DISABLE           关闭指定协议，逗号分隔（默认全开）：
+#                     hy2,tuic,trojan,vless,ss,anytls,vmess,naive,wg,mixed
+#                     例：DISABLE=naive,wg
+#   SS_METHOD         Shadowsocks 加密方式：
+#                     2022-blake3-aes-128-gcm（默认）/ 2022-blake3-aes-256-gcm
+#   RESET_PASSWORD=1  重新生成密码（HY2/Trojan/TUIC/AnyTLS/Naive/混合共用）
+#   RESET_UUID=1      重新生成 UUID（TUIC/VLESS/VMess 共用）
+#   RESET_SS_KEY=1    重新生成 SS 密钥（改 SS_METHOD 会自动重生成，无需加此项）
+#
+# 用法示例（改已部署的配置，直接重跑脚本）：
+#   改端口：  HY2_PORT=8443 bash deploy-singbox-multi.sh
+#   关协议：  DISABLE=naive bash deploy-singbox-multi.sh
+#   换密码：  RESET_PASSWORD=1 bash deploy-singbox-multi.sh
+#   换加密：  SS_METHOD=2022-blake3-aes-256-gcm bash deploy-singbox-multi.sh
+# 一键（curl 管道时把变量放在 bash 前）：
+#   curl -fsSL <脚本URL> | DISABLE=naive bash
 #
 # 行为：
 #  - 优先复用本脚本上次的输出（/opt/singbox-multi/conf/meta.env），
-#    重复运行不会更换 UUID / 密码 / 密钥 / 证书
-#  - 全新部署生成 UUID + 各协议密码 + WireGuard 密钥对 + 自签证书
-#    （ECDSA P-256，10 年有效期），结束时打印各协议的客户端配置
+#    重复运行默认不更换 UUID / 密码 / 密钥 / 证书 / 端口 / 协议开关
+#  - 环境变量 > 上次保存的值 > 默认值；RESET_*=1 则强制重新生成对应凭据
 #
 # 客户端支持情况（2026-10）：
-#   Surge  支持 TUIC v5 / Hysteria2(基础) / Trojan / SS / VMess / AnyTLS / Socks5+HTTP /
-#           TrustTunnel（experimental，Mac 6.4.4+，只走 HTTP/2 over TCP），
+#   Surge  支持 TUIC v5 / Hysteria2(基础) / Trojan / SS / VMess / AnyTLS / Socks5+HTTP，
 #           不支持 VLESS / NaiveProxy / WireGuard（通用）
-#   Egern  除 NaiveProxy / TrustTunnel 外全支持
-#   TrustTunnel 另有：Shadowrocket、AdGuard 官方 TrustTunnel App（iOS/Android；
-#           注意手机 App 不认自签证书，要用它需换成 Let's Encrypt 证书）
+#   Egern  除 NaiveProxy 外全支持
 set -euo pipefail
 
 SNI="${SNI:-www.bing.com}"
@@ -50,6 +59,16 @@ CONF="$DIR/conf"
 META="$CONF/meta.env"
 IMAGE="ghcr.io/sagernet/sing-box:${VERSION}"
 MIXED_USER="user"
+
+# ---- 协议开关 ----
+# DISABLE: 逗号分隔要关闭的协议 key（默认全开）；环境变量 > 上次保存 > 默认
+# 合法 key: hy2, tuic, trojan, vless, ss, anytls, vmess, naive, wg, mixed
+# 例：DISABLE=naive,wg
+is_enabled() { # $1 = key；返回 0 表示启用
+  local key="$1" d=",${DISABLE:-},"
+  case "$d" in *,"$key",*) return 1;; esac
+  return 0
+}
 
 log() { echo "[singbox-multi] $*"; }
 die() { echo "[singbox-multi] ERROR: $*" >&2; exit 1; }
@@ -74,36 +93,72 @@ gen_wg_keypair() { # 输出一行："私钥 公钥"
     | awk '/PrivateKey:/{p=$2} /PublicKey:/{q=$2} END{if (p && q) print p, q}'
 }
 
+gen_uuid() {
+  if [[ -r /proc/sys/kernel/random/uuid ]]; then
+    cat /proc/sys/kernel/random/uuid
+  else
+    openssl rand -hex 16 | sed 's/\(........\)\(....\)\(....\)\(....\)\(............\)/\1-\2-\3-\4-\5/'
+  fi
+}
+
 # ---- 凭据：优先复用，避免重复运行更换 ----
 if [[ -f "$META" && -f "$CONF/cert.pem" && -f "$CONF/key.pem" ]]; then
   # shellcheck disable=SC1090
   source "$META"
   : "${UUID:?meta.env 损坏：缺少 UUID}" \
     "${PASSWORD:?meta.env 损坏：缺少 PASSWORD}" \
-    "${SS_PASSWORD:?meta.env 损坏：缺少 SS_PASSWORD}" \
-    "${WG_SERVER_PRIV:?meta.env 损坏：缺少 WG_SERVER_PRIV}" \
-    "${WG_CLIENT_PUB:?meta.env 损坏：缺少 WG_CLIENT_PUB}" \
-    "${WG_CLIENT_PRIV:?meta.env 损坏：缺少 WG_CLIENT_PRIV}"
+    "${SS_PASSWORD:?meta.env 损坏：缺少 SS_PASSWORD}"
   [ -n "${SNI:-}" ] || SNI="www.bing.com"
   log "复用已有部署的 UUID / 密码 / 密钥 / 证书…"
 else
-  log "生成新的 UUID、密码、WireGuard 密钥对与自签证书…"
-  if [[ -r /proc/sys/kernel/random/uuid ]]; then
-    UUID="$(cat /proc/sys/kernel/random/uuid)"
-  else
-    UUID="$(openssl rand -hex 16 | sed 's/\(........\)\(....\)\(....\)\(....\)\(............\)/\1-\2-\3-\4-\5/')"
-  fi
+  log "生成新的 UUID、密码与自签证书…"
+  UUID="$(gen_uuid)"
   PASSWORD="$(openssl rand -hex 16)"
-  SS_PASSWORD="$(openssl rand -base64 16)"   # 2022-blake3-aes-128-gcm 需 16 字节 base64 密钥
-  read -r WG_SERVER_PRIV WG_SERVER_PUB < <(gen_wg_keypair)
-  [ -n "${WG_SERVER_PRIV:-}" ] && [ -n "${WG_SERVER_PUB:-}" ] || die "WireGuard 服务端密钥生成失败"
-  read -r WG_CLIENT_PRIV WG_CLIENT_PUB < <(gen_wg_keypair)
-  [ -n "${WG_CLIENT_PRIV:-}" ] && [ -n "${WG_CLIENT_PUB:-}" ] || die "WireGuard 客户端密钥生成失败"
+  SS_PASSWORD="$(openssl rand -base64 16)"
   mkdir -p "$CONF"
   openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
     -keyout "$CONF/key.pem" -out "$CONF/cert.pem" -days 3650 -nodes \
     -subj "/CN=${SNI}" -addext "subjectAltName=DNS:${SNI}" 2>/dev/null
   chmod 600 "$CONF/key.pem" "$CONF/cert.pem"
+fi
+
+# 协议开关：环境变量 > 上次保存 > 默认全开
+DISABLE="${DISABLE:-${DISABLE_SAVED:-}}"
+
+# ---- 凭据修改项（RESET_*=1 强制重新生成）----
+if [[ "${RESET_PASSWORD:-0}" = "1" ]]; then
+  PASSWORD="$(openssl rand -hex 16)"
+  log "密码已重新生成（HY2/Trojan/TUIC/AnyTLS/Naive/混合共用）"
+fi
+if [[ "${RESET_UUID:-0}" = "1" ]]; then
+  UUID="$(gen_uuid)"
+  log "UUID 已重新生成（TUIC/VLESS/VMess 共用）"
+fi
+
+# ---- SS 加密方式（改方式会自动按新长度重生成密钥）----
+SS_METHOD="${SS_METHOD:-${SS_METHOD_SAVED:-2022-blake3-aes-128-gcm}}"
+case "$SS_METHOD" in
+  2022-blake3-aes-128-gcm|2022-blake3-aes-256-gcm) ;;
+  *) die "SS_METHOD 无效：$SS_METHOD（可选 2022-blake3-aes-128-gcm / 2022-blake3-aes-256-gcm）" ;;
+esac
+if [[ "${RESET_SS_KEY:-0}" = "1" || "$SS_METHOD" != "${SS_METHOD_SAVED:-2022-blake3-aes-128-gcm}" ]]; then
+  if [[ "$SS_METHOD" = "2022-blake3-aes-256-gcm" ]]; then
+    SS_PASSWORD="$(openssl rand -base64 32)"
+  else
+    SS_PASSWORD="$(openssl rand -base64 16)"
+  fi
+  log "SS 密钥已重新生成（$SS_METHOD）"
+fi
+
+# ---- WireGuard 密钥对（启用且缺失时生成）----
+if is_enabled wg; then
+  if [[ -z "${WG_SERVER_PRIV:-}" || -z "${WG_SERVER_PUB:-}" || -z "${WG_CLIENT_PRIV:-}" || -z "${WG_CLIENT_PUB:-}" ]]; then
+    log "生成 WireGuard 密钥对…"
+    read -r WG_SERVER_PRIV WG_SERVER_PUB < <(gen_wg_keypair)
+    [ -n "${WG_SERVER_PRIV:-}" ] && [ -n "${WG_SERVER_PUB:-}" ] || die "WireGuard 服务端密钥生成失败"
+    read -r WG_CLIENT_PRIV WG_CLIENT_PUB < <(gen_wg_keypair)
+    [ -n "${WG_CLIENT_PRIV:-}" ] && [ -n "${WG_CLIENT_PUB:-}" ] || die "WireGuard 客户端密钥生成失败"
+  fi
 fi
 
 # ---- 端口：环境变量优先，其次沿用上次，最后用默认 ----
@@ -117,9 +172,8 @@ VMESS_PORT="${VMESS_PORT:-${VMESS_PORT_SAVED:-25443}}"
 NAIVE_PORT="${NAIVE_PORT:-${NAIVE_PORT_SAVED:-35443}}"
 WG_PORT="${WG_PORT:-${WG_PORT_SAVED:-45443}}"
 MIXED_PORT="${MIXED_PORT:-${MIXED_PORT_SAVED:-46443}}"
-TT_PORT="${TT_PORT:-${TT_PORT_SAVED:-47443}}"
 for p in "$HY2_PORT" "$TUIC_PORT" "$TROJAN_PORT" "$VLESS_PORT" "$SS_PORT" \
-         "$ANYTLS_PORT" "$VMESS_PORT" "$NAIVE_PORT" "$WG_PORT" "$MIXED_PORT" "$TT_PORT"; do
+         "$ANYTLS_PORT" "$VMESS_PORT" "$NAIVE_PORT" "$WG_PORT" "$MIXED_PORT"; do
   [[ "$p" =~ ^[0-9]+$ ]] && [ "$p" -ge 1 ] && [ "$p" -le 65535 ] \
     || die "端口无效：$p"
 done
@@ -130,11 +184,13 @@ cat > "$META" <<EOF
 UUID=${UUID}
 PASSWORD=${PASSWORD}
 SS_PASSWORD=${SS_PASSWORD}
+SS_METHOD=${SS_METHOD}
 SNI=${SNI}
-WG_SERVER_PRIV=${WG_SERVER_PRIV}
-WG_SERVER_PUB=${WG_SERVER_PUB}
-WG_CLIENT_PRIV=${WG_CLIENT_PRIV}
-WG_CLIENT_PUB=${WG_CLIENT_PUB}
+DISABLE=${DISABLE}
+WG_SERVER_PRIV=${WG_SERVER_PRIV:-}
+WG_SERVER_PUB=${WG_SERVER_PUB:-}
+WG_CLIENT_PRIV=${WG_CLIENT_PRIV:-}
+WG_CLIENT_PUB=${WG_CLIENT_PUB:-}
 HY2_PORT_SAVED=${HY2_PORT}
 TUIC_PORT_SAVED=${TUIC_PORT}
 TROJAN_PORT_SAVED=${TROJAN_PORT}
@@ -145,30 +201,35 @@ VMESS_PORT_SAVED=${VMESS_PORT}
 NAIVE_PORT_SAVED=${NAIVE_PORT}
 WG_PORT_SAVED=${WG_PORT}
 MIXED_PORT_SAVED=${MIXED_PORT}
-TT_PORT_SAVED=${TT_PORT}
+SS_METHOD_SAVED=${SS_METHOD}
+DISABLE_SAVED=${DISABLE}
 EOF
 chmod 600 "$META"
 
 # ---- 端口占用检查（注意：set -e 下函数必须显式 return 0，否则端口空闲时 grep 返回 1 会直接杀掉脚本）----
 check_tcp() { ss -tlnp 2>/dev/null | grep -q ":$1 " && die "TCP $1 已被占用；换个端口再跑"; return 0; }
 check_udp() { ss -ulnp 2>/dev/null | grep -q ":$1 " && die "UDP $1 已被占用；换个端口再跑"; return 0; }
-check_udp "$HY2_PORT"
-check_udp "$TUIC_PORT"
-check_udp "$WG_PORT"
-check_tcp "$TROJAN_PORT"
-check_tcp "$VLESS_PORT"
-check_tcp "$ANYTLS_PORT"
-check_tcp "$VMESS_PORT"
-check_tcp "$NAIVE_PORT"
-check_tcp "$MIXED_PORT"
-check_tcp "$SS_PORT"; check_udp "$SS_PORT"
-check_tcp "$TT_PORT"; check_udp "$TT_PORT"
+if is_enabled hy2; then check_udp "$HY2_PORT"; fi
+if is_enabled tuic; then check_udp "$TUIC_PORT"; fi
+if is_enabled wg; then check_udp "$WG_PORT"; fi
+if is_enabled trojan; then check_tcp "$TROJAN_PORT"; fi
+if is_enabled vless; then check_tcp "$VLESS_PORT"; fi
+if is_enabled anytls; then check_tcp "$ANYTLS_PORT"; fi
+if is_enabled vmess; then check_tcp "$VMESS_PORT"; fi
+if is_enabled naive; then check_tcp "$NAIVE_PORT"; fi
+if is_enabled mixed; then check_tcp "$MIXED_PORT"; fi
+if is_enabled ss; then check_tcp "$SS_PORT"; check_udp "$SS_PORT"; fi
 
-# ---- sing-box 配置 ----
-cat > "$CONF/config.json" <<EOF
-{
-  "log": { "level": "warn" },
-  "inbounds": [
+# ---- sing-box 配置（按 DISABLE 组装 inbounds）----
+INBOUNDS=""
+add_inbound() { # $1: JSON 片段（调用处已展开变量）
+  if [ -n "$INBOUNDS" ]; then INBOUNDS="$INBOUNDS,"; fi
+  INBOUNDS="$INBOUNDS
+$1"
+}
+
+if is_enabled hy2; then
+  add_inbound "$(cat <<EOF
     {
       "type": "hysteria2",
       "tag": "hy2-in",
@@ -182,7 +243,13 @@ cat > "$CONF/config.json" <<EOF
         "certificate_path": "/etc/sing-box/cert.pem",
         "key_path": "/etc/sing-box/key.pem"
       }
-    },
+    }
+EOF
+)"
+fi
+
+if is_enabled tuic; then
+  add_inbound "$(cat <<EOF
     {
       "type": "tuic",
       "tag": "tuic-in",
@@ -198,7 +265,13 @@ cat > "$CONF/config.json" <<EOF
         "certificate_path": "/etc/sing-box/cert.pem",
         "key_path": "/etc/sing-box/key.pem"
       }
-    },
+    }
+EOF
+)"
+fi
+
+if is_enabled trojan; then
+  add_inbound "$(cat <<EOF
     {
       "type": "trojan",
       "tag": "trojan-in",
@@ -211,7 +284,13 @@ cat > "$CONF/config.json" <<EOF
         "certificate_path": "/etc/sing-box/cert.pem",
         "key_path": "/etc/sing-box/key.pem"
       }
-    },
+    }
+EOF
+)"
+fi
+
+if is_enabled vless; then
+  add_inbound "$(cat <<EOF
     {
       "type": "vless",
       "tag": "vless-in",
@@ -224,15 +303,27 @@ cat > "$CONF/config.json" <<EOF
         "certificate_path": "/etc/sing-box/cert.pem",
         "key_path": "/etc/sing-box/key.pem"
       }
-    },
+    }
+EOF
+)"
+fi
+
+if is_enabled ss; then
+  add_inbound "$(cat <<EOF
     {
       "type": "shadowsocks",
       "tag": "ss-in",
       "listen": "::",
       "listen_port": ${SS_PORT},
-      "method": "2022-blake3-aes-128-gcm",
+      "method": "${SS_METHOD}",
       "password": "${SS_PASSWORD}"
-    },
+    }
+EOF
+)"
+fi
+
+if is_enabled anytls; then
+  add_inbound "$(cat <<EOF
     {
       "type": "anytls",
       "tag": "anytls-in",
@@ -245,7 +336,13 @@ cat > "$CONF/config.json" <<EOF
         "certificate_path": "/etc/sing-box/cert.pem",
         "key_path": "/etc/sing-box/key.pem"
       }
-    },
+    }
+EOF
+)"
+fi
+
+if is_enabled vmess; then
+  add_inbound "$(cat <<EOF
     {
       "type": "vmess",
       "tag": "vmess-in",
@@ -258,7 +355,13 @@ cat > "$CONF/config.json" <<EOF
         "certificate_path": "/etc/sing-box/cert.pem",
         "key_path": "/etc/sing-box/key.pem"
       }
-    },
+    }
+EOF
+)"
+fi
+
+if is_enabled naive; then
+  add_inbound "$(cat <<EOF
     {
       "type": "naive",
       "tag": "naive-in",
@@ -271,7 +374,13 @@ cat > "$CONF/config.json" <<EOF
         "certificate_path": "/etc/sing-box/cert.pem",
         "key_path": "/etc/sing-box/key.pem"
       }
-    },
+    }
+EOF
+)"
+fi
+
+if is_enabled wg; then
+  add_inbound "$(cat <<EOF
     {
       "type": "wireguard",
       "tag": "wg-in",
@@ -284,7 +393,13 @@ cat > "$CONF/config.json" <<EOF
           "allowed_ips": ["0.0.0.0/0", "::/0"]
         }
       ]
-    },
+    }
+EOF
+)"
+fi
+
+if is_enabled mixed; then
+  add_inbound "$(cat <<EOF
     {
       "type": "mixed",
       "tag": "mixed-in",
@@ -292,6 +407,15 @@ cat > "$CONF/config.json" <<EOF
       "listen_port": ${MIXED_PORT},
       "users": [{ "username": "${MIXED_USER}", "password": "${PASSWORD}" }]
     }
+EOF
+)"
+fi
+
+[ -n "$INBOUNDS" ] || die "DISABLE 关闭了所有协议，没什么可部署的"
+cat > "$CONF/config.json" <<EOF
+{
+  "log": { "level": "warn" },
+  "inbounds": [${INBOUNDS}
   ],
   "outbounds": [{ "type": "direct", "tag": "direct" }],
   "route": { "final": "direct" }
@@ -299,100 +423,6 @@ cat > "$CONF/config.json" <<EOF
 EOF
 chmod 600 "$CONF/config.json"
 
-# ================= TrustTunnel（第 11 个协议，fork 源码编译独立服务）=================
-# 官方 sing-box 没有 TrustTunnel，只有第三方 fork（shtorm-7/sing-box-extended）有。
-# 没有可用的预编译二进制，脚本在 VPS 上从源码编译（pin 到验证过的 commit）。
-TT_BIN_DIR="$DIR/bin"
-TT_BIN="$TT_BIN_DIR/sing-box-extended"
-TT_IMAGE="singbox-extended:local"
-TT_SRC="$DIR/src/sing-box-extended"
-TT_COMMIT="5956780ba3f140feff771d003914a1b82ea9d5d0"   # 已验证含 TrustTunnel inbound 的 commit（必须用完整 SHA，git fetch 不认短哈希）
-TT_TAGS="with_gvisor,with_quic,with_dhcp,with_wireguard,with_utls,with_acme,with_clash_api,with_tailscale,with_manager,with_masque,with_mtproxy,with_ccm,with_ocm,with_trusttunnel,with_call,with_sudoku,with_cloudflared,with_usbip,with_openvpn,with_openconnect,badlinkname,tfogo_checklinkname0"
-GO_DIR="/usr/local/go"
-
-# 清理残留的旧容器
-if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx singbox-trusttunnel; then
-  log "清理已存在的 singbox-trusttunnel 容器…"
-  docker rm -f singbox-trusttunnel >/dev/null 2>&1 || true
-fi
-
-if [[ ! -x "$TT_BIN" ]]; then
-  # ---- Go 工具链（fork 要求 go >= 1.26）----
-  if ! command -v go >/dev/null 2>&1 || ! go version 2>/dev/null | grep -Eq "go1\.(2[6-9]|[3-9][0-9])"; then
-    log "安装 Go 1.26 工具链…"
-    case "$(uname -m)" in
-      x86_64) GO_ARCH="amd64" ;;
-      aarch64) GO_ARCH="arm64" ;;
-      *) die "不支持的架构：$(uname -m)" ;;
-    esac
-    curl -fsSL --max-time 180 -o /tmp/go.tgz "https://go.dev/dl/go1.26.4.linux-${GO_ARCH}.tar.gz" \
-      || die "Go 下载失败（检查 go.dev 连通性）"
-    rm -rf "$GO_DIR" && tar -C /usr/local -xzf /tmp/go.tgz && rm -f /tmp/go.tgz
-    export PATH="$GO_DIR/bin:$PATH"
-    go version || die "Go 安装失败"
-  fi
-  command -v git >/dev/null 2>&1 || die "未找到 git，请先安装 git（apt install -y git）"
-
-  # ---- 拉源码（pin 到验证过的 commit）----
-  log "获取 sing-box-extended 源码…"
-  rm -rf "$TT_SRC"; mkdir -p "$TT_SRC"
-  git -C "$TT_SRC" init -q
-  git -C "$TT_SRC" remote add origin https://github.com/shtorm-7/sing-box-extended.git
-  git -C "$TT_SRC" fetch --depth 1 origin "$TT_COMMIT" || die "源码获取失败"
-  git -C "$TT_SRC" checkout -q FETCH_HEAD
-
-  # ---- 编译（约 10 分钟，一次性；二进制复用，重复运行跳过）----
-  log "编译 TrustTunnel 二进制（约 10 分钟，第一次才需要）…"
-  mkdir -p "$TT_BIN_DIR" "$DIR/gotmp" "$DIR/gocache"
-  ( cd "$TT_SRC" && \
-    CGO_ENABLED=0 GOTMPDIR="$DIR/gotmp" GOCACHE="$DIR/gocache" \
-    PATH="$GO_DIR/bin:$PATH" \
-    go build -trimpath -ldflags="-s -w" -tags "$TT_TAGS" -o "$TT_BIN" ./cmd/sing-box ) \
-    || die "TrustTunnel 编译失败"
-  chmod +x "$TT_BIN"
-  log "编译完成"
-else
-  log "复用已编译的 TrustTunnel 二进制…"
-fi
-
-# TrustTunnel 独立配置（只跑这一个 inbound）
-cat > "$CONF/tt-config.json" <<EOF
-{
-  "log": { "level": "warn" },
-  "inbounds": [
-    {
-      "type": "trusttunnel",
-      "tag": "tt-in",
-      "listen": "::",
-      "listen_port": ${TT_PORT},
-      "users": [{ "name": "${MIXED_USER}", "password": "${PASSWORD}" }],
-      "network": ["tcp", "udp"],
-      "tls": {
-        "enabled": true,
-        "server_name": "${SNI}",
-        "certificate_path": "/etc/sing-box/cert.pem",
-        "key_path": "/etc/sing-box/key.pem"
-      }
-    }
-  ],
-  "outbounds": [{ "type": "direct", "tag": "direct" }],
-  "route": { "final": "direct" }
-}
-EOF
-chmod 600 "$CONF/tt-config.json"
-
-# 用下载的二进制直接预检（静态二进制，无需 docker）
-log "预检 TrustTunnel 配置…"
-"$TT_BIN" check -c "$CONF/tt-config.json" || die "TrustTunnel 配置校验未通过"
-
-# 给 fork 二进制打一个最小镜像（scratch + 二进制）
-cat > "$DIR/Dockerfile.tt" <<'DOCKEREOF'
-FROM scratch
-COPY bin/sing-box-extended /usr/local/bin/sing-box
-ENTRYPOINT ["/usr/local/bin/sing-box"]
-DOCKEREOF
-log "构建 TrustTunnel 镜像…"
-docker build -q -f "$DIR/Dockerfile.tt" -t "$TT_IMAGE" "$DIR" || die "TrustTunnel 镜像构建失败"
 
 # ---- docker-compose.yml ----
 cat > "$DIR/docker-compose.yml" <<EOF
@@ -405,14 +435,6 @@ services:
     volumes:
       - ./conf:/etc/sing-box
     command: ["run", "-c", "/etc/sing-box/config.json"]
-  sing-box-tt:
-    image: ${TT_IMAGE}
-    container_name: singbox-trusttunnel
-    restart: unless-stopped
-    network_mode: host
-    volumes:
-      - ./conf:/etc/sing-box
-    command: ["run", "-c", "/etc/sing-box/tt-config.json"]
 EOF
 
 # ---- 预检配置 ----
@@ -425,94 +447,165 @@ cd "$DIR"
 docker compose up -d
 sleep 3
 
-# ---- 本机防火墙放行 ----
+# ---- 本机防火墙放行（只放行启用的协议）----
 if command -v iptables >/dev/null 2>&1; then
-  for p in "$TROJAN_PORT" "$VLESS_PORT" "$ANYTLS_PORT" "$VMESS_PORT" "$NAIVE_PORT" "$MIXED_PORT"; do
-    iptables -C INPUT -p tcp --dport "$p" -j ACCEPT 2>/dev/null \
-      || iptables -I INPUT -p tcp --dport "$p" -j ACCEPT 2>/dev/null || true
-  done
-  for p in "$HY2_PORT" "$TUIC_PORT" "$WG_PORT"; do
-    iptables -C INPUT -p udp --dport "$p" -j ACCEPT 2>/dev/null \
-      || iptables -I INPUT -p udp --dport "$p" -j ACCEPT 2>/dev/null || true
-  done
-  for proto in tcp udp; do
-    iptables -C INPUT -p $proto --dport "$SS_PORT" -j ACCEPT 2>/dev/null \
-      || iptables -I INPUT -p $proto --dport "$SS_PORT" -j ACCEPT 2>/dev/null || true
-    iptables -C INPUT -p $proto --dport "$TT_PORT" -j ACCEPT 2>/dev/null \
-      || iptables -I INPUT -p $proto --dport "$TT_PORT" -j ACCEPT 2>/dev/null || true
+  for spec in \
+    "trojan:tcp:$TROJAN_PORT" "vless:tcp:$VLESS_PORT" "anytls:tcp:$ANYTLS_PORT" \
+    "vmess:tcp:$VMESS_PORT" "naive:tcp:$NAIVE_PORT" "mixed:tcp:$MIXED_PORT" \
+    "hy2:udp:$HY2_PORT" "tuic:udp:$TUIC_PORT" "wg:udp:$WG_PORT" \
+    "ss:tcp:$SS_PORT" "ss:udp:$SS_PORT"; do
+    key="${spec%%:*}"; rest="${spec#*:}"; proto="${rest%%:*}"; port="${rest#*:}"
+    is_enabled "$key" || continue
+    iptables -C INPUT -p "$proto" --dport "$port" -j ACCEPT 2>/dev/null \
+      || iptables -I INPUT -p "$proto" --dport "$port" -j ACCEPT 2>/dev/null || true
   done
 fi
 
 docker ps --filter name=singbox-multi --format '{{.Status}}' | grep -qi up \
   || { docker logs singbox-multi --tail 30; die "容器未正常运行，见上方日志"; }
-docker ps --filter name=singbox-trusttunnel --format '{{.Status}}' | grep -qi up \
-  || { docker logs singbox-trusttunnel --tail 30; die "TrustTunnel 容器未正常运行，见上方日志"; }
 
 HOST="$(curl -fsSL --max-time 8 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')"
 
-cat <<DONE
+# ---- 输出组装（只含启用的协议）----
+SURGE_LINES=""; LINK_LINES=""; SURGE_NOTES=""; LISTEN_DESC=""; FW_TCP=""; FW_UDP=""
+add_surge() { SURGE_LINES="${SURGE_LINES:+$SURGE_LINES
+}$1"; }
+add_link() { LINK_LINES="${LINK_LINES:+$LINK_LINES
+}$1"; }
+add_note() { SURGE_NOTES="${SURGE_NOTES:+$SURGE_NOTES
+}$1"; }
+add_listen() { LISTEN_DESC="${LISTEN_DESC:+$LISTEN_DESC / }$1"; }
+add_fw() { # $1=tcp/udp $2=port
+  if [ "$1" = tcp ]; then FW_TCP="${FW_TCP:+$FW_TCP,}$2"; else FW_UDP="${FW_UDP:+$FW_UDP,}$2"; fi
+}
 
-======================================================================
- sing-box 十一协议节点 (Docker) 部署完成
-  监听：HY2 UDP ${HY2_PORT} / TUIC UDP ${TUIC_PORT} / Trojan TCP ${TROJAN_PORT}
-        VLESS TCP ${VLESS_PORT} / SS TCP+UDP ${SS_PORT}
-        AnyTLS TCP ${ANYTLS_PORT} / VMess TCP ${VMESS_PORT} / Naive TCP ${NAIVE_PORT}
-        WireGuard UDP ${WG_PORT} / 混合 TCP ${MIXED_PORT}
-        TrustTunnel TCP+UDP ${TT_PORT}（fork 二进制独立服务）
-  镜像：${IMAGE} + ${TT_IMAGE}（fork 编译版）
-  配置：${CONF}/config.json
-  凭据：${META}
-  运维：cd ${DIR} && docker compose {logs,restart,down}
-======================================================================
+VMESS_LINK="vmess://$(echo -n "{\"v\":\"2\",\"ps\":\"MB-VMess\",\"add\":\"${HOST}\",\"port\":\"${VMESS_PORT}\",\"id\":\"${UUID}\",\"aid\":\"0\",\"net\":\"tcp\",\"type\":\"none\",\"tls\":\"tls\",\"sni\":\"${SNI}\",\"allowInsecure\":1}" | base64 | tr -d '\n')"
+SS_LINK="ss://$(echo -n "${SS_METHOD}:${SS_PASSWORD}" | base64 | tr -d '\n')@${HOST}:${SS_PORT}#MB-SS"
 
------ Surge 配置行（[Proxy]，直接粘贴）-----
-MB-TUIC   = tuic-v5, ${HOST}, ${TUIC_PORT}, uuid=${UUID}, password=${PASSWORD}, sni=${SNI}, alpn=h3, skip-cert-verify=true
-MB-TROJAN = trojan, ${HOST}, ${TROJAN_PORT}, password=${PASSWORD}, sni=${SNI}, skip-cert-verify=true
-MB-SS     = ss, ${HOST}, ${SS_PORT}, encrypt-method=2022-blake3-aes-128-gcm, password=${SS_PASSWORD}, udp-relay=true
-MB-VMESS  = vmess, ${HOST}, ${VMESS_PORT}, username=${UUID}, tls=true, skip-cert-verify=true
-MB-SOCKS  = socks5, ${HOST}, ${MIXED_PORT}, username=${MIXED_USER}, password=${PASSWORD}
-MB-TT     = trust-tunnel, ${HOST}, ${TT_PORT}, username=${MIXED_USER}, password=${PASSWORD}, sni=${SNI}, alpn=h2, skip-cert-verify=true
-# Hysteria2：Surge 仅基础支持，建议用下面的 hy2:// 链接导入或在 Egern 里配
-# AnyTLS：Surge/Egern 均支持，用下面的 anytls:// 链接导入
-# VLESS：Surge 不支持，用 Egern（下面的 vless:// 链接）
-# Naive：iOS 暂无客户端，用桌面端 sing-box
-# WireGuard：用官方 WireGuard App 或 Egern，按下方参数填
-# TrustTunnel：Surge 为 experimental 支持（只走 TCP/H2），Shadowrocket 也支持；
-#   AdGuard 官方 App 不认自签证书，要用它需换成 Let's Encrypt 证书
+if is_enabled hy2; then
+  add_listen "HY2 UDP ${HY2_PORT}"
+  add_link "hysteria2://${PASSWORD}@${HOST}:${HY2_PORT}?sni=${SNI}&insecure=1#MB-HY2"
+  add_note "# Hysteria2：Surge 仅基础支持，建议用下面的 hy2:// 链接导入或在 Egern 里配"
+  add_fw udp "$HY2_PORT"
+fi
+if is_enabled tuic; then
+  add_listen "TUIC UDP ${TUIC_PORT}"
+  add_surge "MB-TUIC   = tuic-v5, ${HOST}, ${TUIC_PORT}, uuid=${UUID}, password=${PASSWORD}, sni=${SNI}, alpn=h3, skip-cert-verify=true"
+  add_link "tuic://${UUID}:${PASSWORD}@${HOST}:${TUIC_PORT}?sni=${SNI}&alpn=h3&congestion_control=bbr#MB-TUIC"
+  add_fw udp "$TUIC_PORT"
+fi
+if is_enabled trojan; then
+  add_listen "Trojan TCP ${TROJAN_PORT}"
+  add_surge "MB-TROJAN = trojan, ${HOST}, ${TROJAN_PORT}, password=${PASSWORD}, sni=${SNI}, skip-cert-verify=true"
+  add_link "trojan://${PASSWORD}@${HOST}:${TROJAN_PORT}?sni=${SNI}&allowInsecure=1#MB-TROJAN"
+  add_fw tcp "$TROJAN_PORT"
+fi
+if is_enabled vless; then
+  add_listen "VLESS TCP ${VLESS_PORT}"
+  add_link "vless://${UUID}@${HOST}:${VLESS_PORT}?security=tls&sni=${SNI}&allowInsecure=1#MB-VLESS"
+  add_note "# VLESS：Surge 不支持，用 Egern（下面的 vless:// 链接）"
+  add_fw tcp "$VLESS_PORT"
+fi
+if is_enabled ss; then
+  add_listen "SS TCP+UDP ${SS_PORT}"
+  add_surge "MB-SS     = ss, ${HOST}, ${SS_PORT}, encrypt-method=${SS_METHOD}, password=${SS_PASSWORD}, udp-relay=true"
+  add_link "$SS_LINK"
+  add_fw tcp "$SS_PORT"; add_fw udp "$SS_PORT"
+fi
+if is_enabled anytls; then
+  add_listen "AnyTLS TCP ${ANYTLS_PORT}"
+  add_link "anytls://${PASSWORD}@${HOST}:${ANYTLS_PORT}?sni=${SNI}&insecure=1#MB-AnyTLS"
+  add_note "# AnyTLS：Surge/Egern 均支持，用下面的 anytls:// 链接导入"
+  add_fw tcp "$ANYTLS_PORT"
+fi
+if is_enabled vmess; then
+  add_listen "VMess TCP ${VMESS_PORT}"
+  add_surge "MB-VMESS  = vmess, ${HOST}, ${VMESS_PORT}, username=${UUID}, tls=true, skip-cert-verify=true"
+  add_link "$VMESS_LINK"
+  add_fw tcp "$VMESS_PORT"
+fi
+if is_enabled naive; then
+  add_listen "Naive TCP ${NAIVE_PORT}"
+  add_note "# Naive：iOS 暂无客户端，用桌面端 sing-box"
+  add_fw tcp "$NAIVE_PORT"
+fi
+if is_enabled wg; then
+  add_listen "WireGuard UDP ${WG_PORT}"
+  add_note "# WireGuard：用官方 WireGuard App 或 Egern，按下方参数填"
+  add_fw udp "$WG_PORT"
+fi
+if is_enabled mixed; then
+  add_listen "混合 TCP ${MIXED_PORT}"
+  add_surge "MB-SOCKS  = socks5, ${HOST}, ${MIXED_PORT}, username=${MIXED_USER}, password=${PASSWORD}"
+  add_fw tcp "$MIXED_PORT"
+fi
 
------ 通用链接（Egern / Shadowrocket 等粘贴导入）-----
-tuic://${UUID}:${PASSWORD}@${HOST}:${TUIC_PORT}?sni=${SNI}&alpn=h3&congestion_control=bbr#MB-TUIC
-hysteria2://${PASSWORD}@${HOST}:${HY2_PORT}?sni=${SNI}&insecure=1#MB-HY2
-trojan://${PASSWORD}@${HOST}:${TROJAN_PORT}?sni=${SNI}&allowInsecure=1#MB-TROJAN
-vless://${UUID}@${HOST}:${VLESS_PORT}?security=tls&sni=${SNI}&allowInsecure=1#MB-VLESS
-anytls://${PASSWORD}@${HOST}:${ANYTLS_PORT}?sni=${SNI}&insecure=1#MB-AnyTLS
-vmess://$(echo -n "{\"v\":\"2\",\"ps\":\"MB-VMess\",\"add\":\"${HOST}\",\"port\":\"${VMESS_PORT}\",\"id\":\"${UUID}\",\"aid\":\"0\",\"net\":\"tcp\",\"type\":\"none\",\"tls\":\"tls\",\"sni\":\"${SNI}\",\"allowInsecure\":1}" | base64 | tr -d '\n')
-ss://$(echo -n "2022-blake3-aes-128-gcm:${SS_PASSWORD}" | base64 | tr -d '\n')@${HOST}:${SS_PORT}#MB-SS
-
+WG_SECTION=""; NAIVE_SECTION=""
+if is_enabled wg; then
+WG_SECTION="$(cat <<EOF
 ----- WireGuard 参数（Egern / 官方 App）-----
   服务器：${HOST}    端口：${WG_PORT}（UDP）
   客户端私钥：${WG_CLIENT_PRIV}
   服务端公钥：${WG_SERVER_PUB}
   允许 IP：0.0.0.0/0, ::/0
 
+EOF
+)"
+fi
+if is_enabled naive || is_enabled mixed; then
+NAIVE_SECTION="$(cat <<EOF
 ----- Naive / 混合 原始参数 -----
-  Naive：${HOST}:${NAIVE_PORT}，用户名 ${MIXED_USER}，密码见下方，TLS SNI=${SNI}（跳过证书验证）
-  混合：${HOST}:${MIXED_PORT}，HTTP/Socks5 通吃，用户名 ${MIXED_USER}
+EOF
+)"
+if is_enabled naive; then
+NAIVE_SECTION="${NAIVE_SECTION}  Naive：${HOST}:${NAIVE_PORT}，用户名 ${MIXED_USER}，密码见下方，TLS SNI=${SNI}（跳过证书验证）
+"
+fi
+if is_enabled mixed; then
+NAIVE_SECTION="${NAIVE_SECTION}  混合：${HOST}:${MIXED_PORT}，HTTP/Socks5 通吃，用户名 ${MIXED_USER}
 
------ TrustTunnel 参数 -----
-  Surge（experimental，TCP/H2）：上面的 MB-TT 行直接粘贴到 [Proxy]
-  服务器：${HOST}    端口：${TT_PORT}（TCP+UDP）
-  用户名：${MIXED_USER}
-  密码：${PASSWORD}
-  TLS SNI：${SNI}（自签证书；AdGuard 手机 App 不认自签，需换 Let's Encrypt 证书才能用）
+"
+fi
+fi
 
+# 密码 / UUID 用途说明（按启用的协议动态生成）
+PW_USE=""; UUID_USE=""
+for p in hy2:HY2 trojan:Trojan tuic:TUIC anytls:AnyTLS naive:Naive mixed:混合; do
+  if is_enabled "${p%%:*}"; then PW_USE="${PW_USE:+$PW_USE / }${p#*:}"; fi
+done
+for p in tuic:TUIC vless:VLESS vmess:VMess; do
+  if is_enabled "${p%%:*}"; then UUID_USE="${UUID_USE:+$UUID_USE / }${p#*:}"; fi
+done
+UUID_LINE="  UUID：${UUID}"; [ -n "$UUID_USE" ] && UUID_LINE+="（${UUID_USE} 用）"
+PW_LINE="  密码：${PASSWORD}"; [ -n "$PW_USE" ] && PW_LINE+="（${PW_USE} 用）"
+
+cat <<DONE
+
+======================================================================
+ sing-box 多协议节点 (Docker) 部署完成
+  监听：${LISTEN_DESC}
+  镜像：${IMAGE}
+  配置：${CONF}/config.json
+  凭据：${META}
+  运维：cd ${DIR} && docker compose {logs,restart,down}
+======================================================================
+
+----- Surge 配置行（[Proxy]，直接粘贴）-----
+${SURGE_LINES}
+${SURGE_NOTES}
+
+----- 通用链接（Egern / Shadowrocket 等粘贴导入）-----
+${LINK_LINES}
+
+${WG_SECTION}
+${NAIVE_SECTION}
 ----- 原始参数 -----
   服务器：${HOST}
-  UUID：${UUID}（TUIC / VLESS / VMess 用）
-  密码：${PASSWORD}（HY2 / Trojan / TUIC / AnyTLS / Naive / 混合 / TrustTunnel 用）
-  SS 密钥：${SS_PASSWORD}（base64，Shadowsocks 2022 用）
+${UUID_LINE}
+${PW_LINE}
+  SS 密钥：${SS_PASSWORD}（base64，${SS_METHOD} 用）
   SNI：${SNI}
   证书：自签，客户端需开"跳过证书验证"
 ======================================================================
 DONE
-echo "云控制台必做：安全组放行 入站 TCP ${TROJAN_PORT},${VLESS_PORT},${SS_PORT},${ANYTLS_PORT},${VMESS_PORT},${NAIVE_PORT},${MIXED_PORT},${TT_PORT} 与 UDP ${HY2_PORT},${TUIC_PORT},${SS_PORT},${WG_PORT},${TT_PORT}"
+echo "云控制台必做：安全组放行 入站 TCP ${FW_TCP} 与 UDP ${FW_UDP}"
