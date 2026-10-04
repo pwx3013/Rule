@@ -305,7 +305,7 @@ TT_BIN_DIR="$DIR/bin"
 TT_BIN="$TT_BIN_DIR/sing-box-extended"
 TT_IMAGE="singbox-extended:local"
 TT_SRC="$DIR/src/sing-box-extended"
-TT_COMMIT="5956780"   # 已验证含 TrustTunnel inbound 的 commit
+TT_COMMIT="5956780ba3f140feff771d003914a1b82ea9d5d0"   # 已验证含 TrustTunnel inbound 的 commit（必须用完整 SHA，git fetch 不认短哈希）
 TT_TAGS="with_gvisor,with_quic,with_dhcp,with_wireguard,with_utls,with_acme,with_clash_api,with_tailscale,with_manager,with_masque,with_mtproxy,with_ccm,with_ocm,with_trusttunnel,with_call,with_sudoku,with_cloudflared,with_usbip,with_openvpn,with_openconnect,badlinkname,tfogo_checklinkname0"
 GO_DIR="/usr/local/go"
 
