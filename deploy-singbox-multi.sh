@@ -11,6 +11,10 @@
 # 或一键：
 #   curl -fsSL <脚本URL> | sudo bash
 #
+# 交互式管理菜单（233boy 风格：查看节点/改端口/换密码/换UUID/换SS加密/开关协议/重启/卸载）：
+#   bash deploy-singbox-multi.sh menu
+#   curl -fsSL <脚本URL> | sudo bash -s menu
+#
 # 可选环境变量（端口均可改，避开已有服务）：
 #   HY2_PORT          Hysteria2 监听 UDP 端口（默认 14443）
 #   TUIC_PORT         TUIC v5 监听 UDP 端口（默认 24443）
@@ -26,7 +30,7 @@
 #   SING_BOX_VERSION  镜像版本（默认 v1.14.2，支持 arm64；AnyTLS 需 >= 1.12）
 #   DISABLE           关闭指定协议，逗号分隔（默认全开）：
 #                     hy2,tuic,trojan,vless,ss,anytls,vmess,naive,wg,mixed
-#                     例：DISABLE=naive,wg
+#                     例：DISABLE=naive,wg；DISABLE=none 表示清空（全部启用）
 #   SS_METHOD         Shadowsocks 加密方式：
 #                     2022-blake3-aes-128-gcm（默认）/ 2022-blake3-aes-256-gcm
 #   RESET_PASSWORD=1  重新生成密码（HY2/Trojan/TUIC/AnyTLS/Naive/混合共用）
@@ -73,7 +77,160 @@ is_enabled() { # $1 = key；返回 0 表示启用
 log() { echo "[singbox-multi] $*"; }
 die() { echo "[singbox-multi] ERROR: $*" >&2; exit 1; }
 
+# ================= 交互式管理菜单（233boy 风格）==================
+# 用法：
+#   bash deploy-singbox-multi.sh menu
+#   curl -fsSL <脚本URL> | bash -s menu
+SCRIPT_URL="https://raw.githubusercontent.com/pwx3013/Rule/main/deploy-singbox-multi.sh"
+MENU_SELF="/tmp/singbox-multi-menu.sh"
+
+menu_read() { # $1=提示语 $2=变量名；从 /dev/tty 读取（兼容 curl|bash）
+  local prompt="$1" name="$2" val=""
+  printf "%s" "$prompt" > /dev/tty
+  IFS= read -r val < /dev/tty || true
+  printf -v "$name" "%s" "$val"
+}
+
+menu_meta() {
+  [ -f "$META" ] || die "未找到已部署配置（$META），请先执行部署"
+  # shellcheck disable=SC1090
+  source "$META"
+}
+
+menu_node_row() { # $1=显示名 $2=key $3=端口 $4=协议
+  local name="$1" key="$2" port="$3" proto="$4" status="启用"
+  case ",${DISABLE_SAVED:-}," in *,"$key",*) status="已关闭";; esac
+  printf "  %-12s %s/%-5s  %s\n" "$name" "$proto" "$port" "$status"
+}
+
+menu_show_nodes() {
+  menu_meta
+  echo ""
+  echo "---------- 已部署节点 ----------"
+  menu_node_row "Hysteria2"   "hy2"    "${HY2_PORT_SAVED:-?}"    "UDP"
+  menu_node_row "TUIC v5"     "tuic"   "${TUIC_PORT_SAVED:-?}"   "UDP"
+  menu_node_row "Trojan"      "trojan" "${TROJAN_PORT_SAVED:-?}" "TCP"
+  menu_node_row "VLESS"       "vless"  "${VLESS_PORT_SAVED:-?}"  "TCP"
+  menu_node_row "Shadowsocks" "ss"     "${SS_PORT_SAVED:-?}"     "TCP+UDP"
+  menu_node_row "AnyTLS"      "anytls" "${ANYTLS_PORT_SAVED:-?}" "TCP"
+  menu_node_row "VMess"       "vmess"  "${VMESS_PORT_SAVED:-?}"  "TCP"
+  menu_node_row "NaiveProxy"  "naive"  "${NAIVE_PORT_SAVED:-?}"  "TCP"
+  menu_node_row "WireGuard"   "wg"     "${WG_PORT_SAVED:-?}"     "UDP"
+  menu_node_row "混合"        "mixed"  "${MIXED_PORT_SAVED:-?}"  "TCP"
+  echo ""
+  echo "  UUID: ${UUID:-}"
+  echo "  密码: ${PASSWORD:-}"
+  echo "  SS: ${SS_METHOD_SAVED:-2022-blake3-aes-128-gcm} / ${SS_PASSWORD:-}"
+  echo "  SNI: ${SNI:-www.bing.com}"
+  echo ""
+}
+
+menu_rerun() { # VAR=val ...：带环境变量重新执行部署脚本，完成后返回菜单
+  log "应用更改，重新部署..."
+  env "$@" bash "$MENU_SELF" || log "重新部署未成功完成"
+}
+
+menu_change_port() {
+  menu_meta
+  echo ""
+  echo "  1.Hysteria2(UDP)  2.TUIC(UDP)  3.Trojan(TCP)  4.VLESS(TCP)  5.SS(TCP+UDP)"
+  echo "  6.AnyTLS(TCP)  7.VMess(TCP)  8.Naive(TCP)  9.WireGuard(UDP)  10.混合(TCP)"
+  menu_read "选择协议编号 [1-10]: " n
+  menu_read "输入新端口: " p
+  local var=""
+  case "$n" in
+    1) var=HY2_PORT;; 2) var=TUIC_PORT;; 3) var=TROJAN_PORT;; 4) var=VLESS_PORT;;
+    5) var=SS_PORT;; 6) var=ANYTLS_PORT;; 7) var=VMESS_PORT;; 8) var=NAIVE_PORT;;
+    9) var=WG_PORT;; 10) var=MIXED_PORT;; *) echo "无效编号"; return 0;;
+  esac
+  [[ "$p" =~ ^[0-9]+$ ]] && [ "$p" -ge 1 ] && [ "$p" -le 65535 ] || { echo "端口无效"; return 0; }
+  menu_rerun "$var=$p"
+}
+
+menu_change_ss_method() {
+  menu_meta
+  echo ""
+  echo "当前: ${SS_METHOD_SAVED:-2022-blake3-aes-128-gcm}"
+  echo "  1. 2022-blake3-aes-128-gcm"
+  echo "  2. 2022-blake3-aes-256-gcm"
+  menu_read "请选择 [1-2]: " c
+  case "$c" in
+    1) menu_rerun "SS_METHOD=2022-blake3-aes-128-gcm";;
+    2) menu_rerun "SS_METHOD=2022-blake3-aes-256-gcm";;
+    *) echo "无效选择";;
+  esac
+}
+
+menu_toggle_protos() {
+  menu_meta
+  echo ""
+  echo "当前关闭: ${DISABLE_SAVED:-(无)}"
+  echo "可选 key: hy2,tuic,trojan,vless,ss,anytls,vmess,naive,wg,mixed"
+  menu_read "输入要关闭的 key（逗号分隔，直接回车=全部启用）: " d
+  [ -z "$d" ] && d="none"
+  menu_rerun "DISABLE=$d"
+}
+
+menu_restart() {
+  [ -d "$DIR" ] || { echo "未找到部署目录"; return 0; }
+  (cd "$DIR" && docker compose restart) && echo "服务已重启" || echo "重启失败"
+}
+
+menu_uninstall() {
+  menu_read "确认卸载 sing-box 多协议？输入 y 确认: " yn
+  [ "$yn" = "y" ] || { echo "已取消"; return 0; }
+  menu_read "将删除 $DIR（含全部配置），再次输入 y 确认: " yn2
+  [ "$yn2" = "y" ] || { echo "已取消"; return 0; }
+  (cd "$DIR" && docker compose down 2>/dev/null) || true
+  docker rm -f singbox-multi 2>/dev/null || true
+  rm -rf "$DIR"
+  echo "已卸载"
+  exit 0
+}
+
+run_menu() {
+  [ -e /dev/tty ] || die "菜单模式需要交互式终端"
+  command -v docker >/dev/null 2>&1 || die "未找到 docker，请先安装 docker"
+  log "准备管理菜单..."
+  curl -fsSL --max-time 30 "$SCRIPT_URL" -o "$MENU_SELF" || die "脚本下载失败，检查网络"
+  while true; do
+    echo ""
+    echo "====== sing-box 多协议管理 ======"
+    echo " 1. 查看节点信息"
+    echo " 2. 修改协议端口"
+    echo " 3. 更换密码"
+    echo " 4. 更换 UUID"
+    echo " 5. 更换 SS 加密方式"
+    echo " 6. 开关协议"
+    echo " 7. 重启服务"
+    echo " 8. 卸载"
+    echo " 0. 退出"
+    echo "================================"
+    menu_read "请选择 [0-8]: " c
+    case "$c" in
+      1) menu_show_nodes;;
+      2) menu_change_port;;
+      3) menu_read "确认更换共用密码？(y/N): " yn
+         [ "$yn" = "y" ] && menu_rerun "RESET_PASSWORD=1" || true;;
+      4) menu_read "确认更换 UUID？(y/N): " yn
+         [ "$yn" = "y" ] && menu_rerun "RESET_UUID=1" || true;;
+      5) menu_change_ss_method;;
+      6) menu_toggle_protos;;
+      7) menu_restart;;
+      8) menu_uninstall;;
+      0) exit 0;;
+      *) echo "无效选择";;
+    esac
+  done
+}
+
 [ "$(id -u)" = "0" ] || die "请用 root 运行"
+
+# menu 模式分发（放 root 检查之后、docker 检查之前）
+if [ "${1:-}" = "menu" ]; then
+  run_menu
+  exit 0
+fi
 command -v docker >/dev/null 2>&1 || die "未找到 docker，请先安装 docker"
 docker compose version >/dev/null 2>&1 || die "未找到 docker compose 插件"
 command -v openssl >/dev/null 2>&1 || die "未找到 openssl"
@@ -122,8 +279,12 @@ else
   chmod 600 "$CONF/key.pem" "$CONF/cert.pem"
 fi
 
-# 协议开关：环境变量 > 上次保存 > 默认全开
-DISABLE="${DISABLE:-${DISABLE_SAVED:-}}"
+# 协议开关：环境变量 > 上次保存 > 默认全开（DISABLE=none 表示清空，即全部启用）
+if [ "${DISABLE:-}" = "none" ]; then
+  DISABLE=""
+else
+  DISABLE="${DISABLE:-${DISABLE_SAVED:-}}"
+fi
 
 # ---- 凭据修改项（RESET_*=1 强制重新生成）----
 if [[ "${RESET_PASSWORD:-0}" = "1" ]]; then
@@ -599,6 +760,7 @@ cat <<DONE
   配置：${CONF}/config.json
   凭据：${META}
   运维：cd ${DIR} && docker compose {logs,restart,down}
+  菜单：curl -fsSL <脚本URL> | bash -s menu（查看/改端口/换密码/开关协议等）
 ======================================================================
 
 ----- Surge 配置行（[Proxy]，直接粘贴）-----
