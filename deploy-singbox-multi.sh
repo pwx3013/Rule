@@ -69,8 +69,8 @@ log "拉取镜像 ${IMAGE}…"
 docker pull -q "$IMAGE" || die "镜像拉取失败"
 
 gen_wg_keypair() { # 输出一行："私钥 公钥"
-  docker run --rm "$IMAGE" generate wireguard-keypair 2>/dev/null \
-    | awk '/Private key:/{p=$3} /Public key:/{q=$3} END{if (p && q) print p, q}'
+  docker run --rm "$IMAGE" generate wg-keypair 2>/dev/null \
+    | awk '/PrivateKey:/{p=$2} /PublicKey:/{q=$2} END{if (p && q) print p, q}'
 }
 
 # ---- 凭据：优先复用，避免重复运行更换 ----
