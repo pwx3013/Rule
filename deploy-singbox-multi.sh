@@ -148,9 +148,9 @@ TT_PORT_SAVED=${TT_PORT}
 EOF
 chmod 600 "$META"
 
-# ---- 端口占用检查 ----
-check_tcp() { ss -tlnp 2>/dev/null | grep -q ":$1 " && die "TCP $1 已被占用；换个端口再跑"; }
-check_udp() { ss -ulnp 2>/dev/null | grep -q ":$1 " && die "UDP $1 已被占用；换个端口再跑"; }
+# ---- 端口占用检查（注意：set -e 下函数必须显式 return 0，否则端口空闲时 grep 返回 1 会直接杀掉脚本）----
+check_tcp() { ss -tlnp 2>/dev/null | grep -q ":$1 " && die "TCP $1 已被占用；换个端口再跑"; return 0; }
+check_udp() { ss -ulnp 2>/dev/null | grep -q ":$1 " && die "UDP $1 已被占用；换个端口再跑"; return 0; }
 check_udp "$HY2_PORT"
 check_udp "$TUIC_PORT"
 check_udp "$WG_PORT"
