@@ -1,0 +1,11 @@
+# > Trakt
+
+# Trakt.tv 影视追踪 / 同步服务：官网 trakt.tv（含 OAuth 授权页）与 API v2 api.trakt.tv
+
+# Surge / Loon 远程规则格式
+
+#Trakt
+
+DOMAIN-SUFFIX,trakt.tv
+
+DOMAIN-SUFFIX,api.trakt.tv
