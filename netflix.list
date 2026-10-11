@@ -1,0 +1,19 @@
+# > Netflix
+
+# Netflix 流媒体：官网与 API（netflix.com / netflix.net）、视频 CDN（nflxvideo.net）、图片 CDN（nflximg.net / nflxext.com）、官方测速 fast.com
+
+# Surge / Loon 远程规则格式
+
+#Netflix
+
+DOMAIN-SUFFIX,netflix.com
+
+DOMAIN-SUFFIX,netflix.net
+
+DOMAIN-SUFFIX,nflxvideo.net
+
+DOMAIN-SUFFIX,nflximg.net
+
+DOMAIN-SUFFIX,nflxext.com
+
+DOMAIN-SUFFIX,fast.com
