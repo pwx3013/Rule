@@ -1,0 +1,17 @@
+# > Disney+
+
+# Disney+ 流媒体：官网（disneyplus.com / disney-plus.net）、流媒体 API 与边缘节点（dssott.com / dssedge.com / bamgrid.com）
+
+# Surge / Loon 远程规则格式
+
+#Disney
+
+DOMAIN-SUFFIX,disneyplus.com
+
+DOMAIN-SUFFIX,disney-plus.net
+
+DOMAIN-SUFFIX,dssott.com
+
+DOMAIN-SUFFIX,dssedge.com
+
+DOMAIN-SUFFIX,bamgrid.com
