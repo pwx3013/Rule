@@ -1,0 +1,13 @@
+# > Hongguo
+# 红果小说去广告规则
+# Surge / Loon 远程规则格式（引用时指定策略）
+# 引用示例：RULE-SET,https://raw.githubusercontent.com/pwx3013/Rule/main/hongguo.list,REJECT
+
+DOMAIN-KEYWORD,ad.qznovelvod
+DOMAIN-KEYWORD,applog
+DOMAIN-KEYWORD,dig.bdurl
+DOMAIN-KEYWORD,dig.zjurl
+DOMAIN-KEYWORD,snssdk.com
+DOMAIN-SUFFIX,ndcpp.com
+AND,((DOMAIN-KEYWORD,fqnovel),(DOMAIN-KEYWORD,misc))
+AND,((DOMAIN-KEYWORD,zijieapi),(DOMAIN-KEYWORD,ads))
