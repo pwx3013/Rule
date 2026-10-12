@@ -34,6 +34,7 @@ DOMAIN-SUFFIX,bing.com
 DOMAIN-SUFFIX,meta.ai
 DOMAIN-SUFFIX,api.meta.ai
 DOMAIN-SUFFIX,muse.ai
+DOMAIN-SUFFIX,hatch.metaaivm.com
 
 #Perplexity
 DOMAIN-SUFFIX,perplexity.ai
