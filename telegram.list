@@ -1,5 +1,6 @@
 # > Telegram（含第三方客户端）
 # 官方部分合并自 blackmatrix7/ios_rule_script，并补充 Nicegram / Nekogram / iMe / Swiftgram 等第三方客户端域名
+# 服务器 IP 段同步自上游 blackmatrix7（IP-ASN 上游有但 Surge 不支持，已略去；对应网段已被 IP-CIDR 覆盖）
 # Surge / Loon 远程规则格式
 
 #官方 Telegram
@@ -38,3 +39,15 @@ DOMAIN-SUFFIX,mbrx.app
 
 #Swiftgram
 DOMAIN-SUFFIX,swiftgram.app
+
+#Telegram 服务器 IP 段（直连 IP 不再掉 FINAL）
+IP-CIDR,91.108.0.0/16,no-resolve
+IP-CIDR,149.154.160.0/20,no-resolve
+IP-CIDR,5.28.192.0/18,no-resolve
+IP-CIDR,109.239.140.0/24,no-resolve
+IP-CIDR,139.59.210.98/32,no-resolve
+IP-CIDR,196.55.216.167/32,no-resolve
+IP-CIDR6,2001:67c:4e8::/48,no-resolve
+IP-CIDR6,2001:b28:f23c::/47,no-resolve
+IP-CIDR6,2001:b28:f23f::/48,no-resolve
+IP-CIDR6,2a0a:f280::/29,no-resolve
