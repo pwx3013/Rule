@@ -1,0 +1,3 @@
+# Emby 推流 - 走美国 AMD
+IP-CIDR,104.21.93.254/32,no-resolve
+DOMAIN-SUFFIX,cflocal.xxlb.net,extended-matching
