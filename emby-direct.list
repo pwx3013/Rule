@@ -1,0 +1,12 @@
+# Emby 站点 - 直连
+DOMAIN-SUFFIX,imetyou.top
+DOMAIN-KEYWORD,yusen,extended-matching
+DOMAIN-KEYWORD,kingemby,extended-matching
+DOMAIN-KEYWORD,embymv,extended-matching
+DOMAIN-SUFFIX,huangmin.cc.cd,extended-matching
+DOMAIN-SUFFIX,host.docker.internal,extended-matching
+DOMAIN-SUFFIX,xmsl.org,extended-matching
+DOMAIN-SUFFIX,emby.my,extended-matching
+# 基础设施直连
+DOMAIN-SUFFIX,5662303.xyz
+DOMAIN-SUFFIX,1887191.xyz
