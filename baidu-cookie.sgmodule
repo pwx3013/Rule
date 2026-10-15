@@ -1,0 +1,5 @@
+#!name=百度网盘 Cookie 抓取
+#!desc=临时 MITM 百度网盘，抓完 Cookie 后可禁用删除
+
+[MITM]
+hostname = *.baidu.com
