@@ -22,7 +22,7 @@ if ss -tlnp 2>/dev/null | grep -q ":${PORT} "; then
   die "TCP ${PORT} 已被占用；换端口：VMESS_PORT=xxxx bash $0"
 fi
 
-apk add --no-cache curl unzip >/dev/null
+apk add --no-cache curl unzip gcompat >/dev/null
 
 ARCH="$(uname -m)"
 case "$ARCH" in
