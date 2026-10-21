@@ -1,0 +1,9 @@
+#!name=哔哩哔哩解锁大会员画质
+#!desc=bilibili 解锁大会员画质 (1080P+)
+#!icon=https://raw.githubusercontent.com/fmz200/wool_scripts/main/icons/apps/BiliBili.png
+
+[Script]
+哔哩哔哩番剧开启1080P+ = type=http-response, pattern=^https:\/\/ap(p|i)\.bilibili\.com\/((pgc\/player\/api\/playurl)|(x\/v2\/account\/myinfo\?)|(x\/v2\/account\/mine\?)), script-path=https://raw.githubusercontent.com/zqzess/rule_for_quantumultX/master/js/backup/bilifj.js, requires-body=true, timeout=10
+
+[MITM]
+hostname = %APPEND% app.bilibili.com, api.bilibili.com
