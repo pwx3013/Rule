@@ -4,26 +4,17 @@
 # jumpAhead=true, blockStore=true, nativeDownload=true, subtitle_type=Translated, auto_cc=true, show_only_auto_translation=true
 
 [rewrite_local]
-# 1. 字幕翻译请求
-^https://(?:www\.|m\.)?youtube\.com/api/timedtext\?[^#]+$ url script-request-header https://raw.githubusercontent.com/teaoea/shell/main/plugins/YouTube/dist/request.min.js#background_playback=true&hide_home_shorts=true&translation_enabled=true&translation_target=zh-CN&playback_region=original&log_enabled=false&log_level=info&capture_budget=16
+# 1. 基础广告拦截
+^https?:\/\/(www|s)\.youtube\.com\/api\/stats\/ads url reject-200
+^https?:\/\/(www|s)\.youtube\.com\/(pagead|ptracking) url reject-200
 
-# 2. 播放器与广告断点（Ad Break 空响应拦截）
-^https://(?:youtubei(?:-att)?\.googleapis\.com|(?:www\.|m\.|music\.)?youtube\.com)/youtubei/v1/(?:player|ad_break)(?:\?[^#]*)?$ url script-echo-response https://raw.githubusercontent.com/teaoea/shell/main/plugins/YouTube/dist/request.min.js#background_playback=true&hide_home_shorts=true&translation_enabled=true&translation_target=zh-CN&playback_region=original&log_enabled=false&log_level=info&capture_budget=16&echo_response=true
+# 2. 视频流与画质响应处理
+^https?:\/\/[\w-]+\.googlevideo\.com\/(?:videoplayback|initplayback) url script-response-header https://raw.githubusercontent.com/Ender-Wang/YouTubeAds-PiP-BackgroundPlay/main/youtube.response.preview.js
 
-# 3. 播放与日志请求
-^https://(?:youtubei(?:-att)?\.googleapis\.com|(?:www\.|m\.|music\.)?youtube\.com)/youtubei/v1/(?:player|get_watch|log_event)(?:\?[^#]*)?$ url script-request-body https://raw.githubusercontent.com/teaoea/shell/main/plugins/YouTube/dist/request.min.js#background_playback=true&hide_home_shorts=true&translation_enabled=true&translation_target=zh-CN&playback_region=original&log_enabled=false&log_level=info&capture_budget=16
+# 3. 主响应增强（去广告 / 屏蔽 Shorts / 开启后台播放与画中画）
+^https?:\/\/youtubei\.googleapis\.com\/youtubei\/v1\/(?:browse|next|player|search|reel\/reel_watch_sequence) url script-response-body https://raw.githubusercontent.com/Ender-Wang/YouTubeAds-PiP-BackgroundPlay/main/youtube.response.preview.js
 
-# 4. 主响应增强（去广告 / 隐藏 Shorts / 开启后台播放）
-^https://(?:youtubei(?:-att)?\.googleapis\.com|(?:www\.|m\.|music\.)?youtube\.com)/youtubei/v1/(?:browse|next|search|player|get_watch|config|log_event|reel/reel_watch_sequence)(?:\?[^#]*)?$ url script-response-body https://raw.githubusercontent.com/teaoea/shell/main/plugins/YouTube/dist/response.min.js#background_playback=true&hide_home_shorts=true&translation_enabled=true&translation_target=zh-CN&playback_region=original&log_enabled=false&log_level=info&capture_budget=16
-
-# 5. 视频流响应头处理
-^https://[\w-]+\.googlevideo\.com/(?:videoplayback|initplayback)(?:\?[^#]*)?$ url script-response-header https://raw.githubusercontent.com/teaoea/shell/main/plugins/YouTube/dist/response.min.js#background_playback=true&hide_home_shorts=true&translation_enabled=true&translation_target=zh-CN&playback_region=original&log_enabled=false&log_level=info&capture_budget=16
-
-# 6. 信息流请求头处理
-^https://(?:youtubei(?:-att)?\.googleapis\.com|(?:www\.|m\.|music\.)?youtube\.com)/youtubei/v1/(?:browse|next|search|reel/reel_watch_sequence)(?:\?[^#]*)?$ url script-request-header https://raw.githubusercontent.com/teaoea/shell/main/plugins/YouTube/dist/request.min.js#background_playback=true&hide_home_shorts=true&translation_enabled=true&translation_target=zh-CN&playback_region=original&log_enabled=false&log_level=info&capture_budget=16
-
-# 7. 日志响应
-^http://youtube-logs\.invalid(?::80)?(?:\?[^#]*)?$ url script-echo-response https://raw.githubusercontent.com/teaoea/shell/main/plugins/YouTube/dist/request.min.js#background_playback=true&hide_home_shorts=true&translation_enabled=true&translation_target=zh-CN&playback_region=original&log_enabled=false&log_level=info&capture_budget=16&echo_response=true&log_enabled=true
-
+# 4. 双语与自动翻译字幕（来自 DualSubs 核心，与 kelee.one 字幕逻辑一致）
+^https:\/\/(www|m)\.youtube\.com\/api\/timedtext\? url script-response-body https://raw.githubusercontent.com/DualSubs/YouTube/main/dist/DualSubs.YouTube.min.js
 [mitm]
-hostname = youtubei.googleapis.com, youtubei-att.googleapis.com, youtube.com, www.youtube.com, m.youtube.com, music.youtube.com, *.googlevideo.com
+hostname = *.googlevideo.com, youtubei.googleapis.com, www.youtube.com, m.youtube.com, s.youtube.com
