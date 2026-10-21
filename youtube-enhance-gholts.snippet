@@ -1,0 +1,58 @@
+#!name=YouTube 增强
+#!desc=去除油管广告 / 支持后台播放 / 画中画 / 自动最高画质
+#!author=gholts
+#!icon=https://iili.io/KQ67Yxa.png
+#!homepage=https://github.com/gholts/surge/tree/main/modules
+#!tag=YouTube,去广告,增强
+# 由 Surge 版 youtube-enhance-gholts.sgmodule 转换而来，改法参照 teaoea/shell 的 YouTubeNoAds.snippet。
+# QX 的脚本参数写在脚本 URL 的 # 后面（不是 Surge 的 , argument= 写法，上版错在这里所以不生效）。
+# 参数已按用户截图写死：
+# blockUpload/blockShorts/autoHd/blockGames/blockVerticalLive/jumpAhead/blockStore/nativeDownload 均为 true，
+# subtitle_type=Translated，show_only_auto_translation=true。
+# 原模块的 auto_cc 未被任何脚本行引用，故未出现在参数中。
+# ad_break 在 QX 里用 script-echo-response（原 Surge 的 http-request 脚本是直接返回空响应，请求头脚本做不到）。
+# 注意：IBL3ND 的脚本按 Surge 的 binary-body-mode 写（处理 protobuf 二进制），QX 没有这个模式，
+# protobuf 相关行在 QX 下效果仍需实测；字幕、reject、302、ad_break 回空响应这几处是纯文本/空响应，不受影响。
+
+[rewrite_local]
+# 广告相关直接 404
+^https:\/\/www\.youtube\.com\/(pagead|pcs)\/ url reject
+^https:\/\/s\.youtube\.com\/api\/stats\/ads url reject
+# timedtext：把 tlang 改写为 subtype=Translate，供字幕脚本识别
+^https://((?:www|m)\.youtube\.com/api/timedtext\?)([^#]+)&tlang=([^&#]+)&([^#]*)(#.*)?$ url 302 https://$1$2&$4&subtype=Translate$5
+^https://((?:www|m)\.youtube\.com/api/timedtext\?)([^#]+)&tlang=([^&#]+)(#.*)?$ url 302 https://$1$2&subtype=Translate$4
+^https://((?:www|m)\.youtube\.com/api/timedtext\?)tlang=([^&#]+)&([^#]*)(#.*)?$ url 302 https://$1$3&subtype=Translate$4
+^https://((?:www|m)\.youtube\.com/api/timedtext\?)tlang=([^&#]+)(#.*)?$ url 302 https://$1subtype=Translate$3
+
+# 1) 空响应拦截 ad_break（请求阶段）
+^https://youtubei\.googleapis\.com/youtubei/v1/player/ad_break(?:\?.*)?$ url script-echo-response https://raw.githubusercontent.com/LamJIson/-/refs/heads/main/Script/youtube-ad-break.js
+
+# ad_break 空响应
+^https:\/\/youtubei\.googleapis\.com\/youtubei\/v1\/player\/ad_break(?:\?.*)?$ url script-echo-response https://raw.githubusercontent.com/IBL3ND/module/refs/heads/main/youtube-request.js
+
+# 原生下载（响应）
+^https:\/\/youtubei\.googleapis\.com\/youtubei\/v1\/offline\/get_download_action(?:\?.*)?$ url script-response-body https://raw.githubusercontent.com/IBL3ND/module/refs/heads/main/youtube-response.js#{"nativeDownload":true}
+
+# player 请求（原生下载相关）
+^https:\/\/youtubei\.googleapis\.com\/youtubei\/v1\/player(?:\?.*)?$ url script-request-body https://raw.githubusercontent.com/IBL3ND/module/refs/heads/main/youtube-request.js#{"nativeDownload":true}
+
+# 主响应增强（去广告 / UI / 画质等）
+^https:\/\/youtubei\.googleapis\.com\/youtubei\/v1\/(?:navigation\/resolve_url|browse|next|player|search|reel\/reel_watch_sequence|guide|account\/get_setting|get_watch|log_event|config)(?:\?.*)?$ url script-response-body https://raw.githubusercontent.com/IBL3ND/module/refs/heads/main/youtube-response.js#{"blockUpload":true,"blockShorts":true,"blockGames":true,"blockVerticalLive":true,"jumpAhead":true,"autoHd":true,"blockStore":true}
+
+# initplayback 响应（UMP）
+^https?:\/\/[\w-]+\.googlevideo\.com\/initplayback(?:\?.*)?$ url script-response-body https://raw.githubusercontent.com/IBL3ND/module/refs/heads/main/youtube-response.js#{"blockGames":true,"blockVerticalLive":true,"jumpAhead":true,"autoHd":true,"blockStore":true}
+
+# initplayback 请求
+^https?:\/\/[\w-]+\.googlevideo\.com\/initplayback(?:\?.*)?$ url script-request-body https://raw.githubusercontent.com/IBL3ND/module/refs/heads/main/youtube-request.js
+
+# videoplayback 自动高清
+^https?:\/\/[\w-]+\.googlevideo\.com\/videoplayback url script-request-body https://raw.githubusercontent.com/IBL3ND/module/refs/heads/main/youtube-request.js#{"autoHd":true}
+
+# log_event
+^https:\/\/youtubei\.googleapis\.com\/youtubei\/v1\/log_event url script-request-body https://raw.githubusercontent.com/IBL3ND/module/refs/heads/main/youtube-request.js
+
+# 2) 双语字幕（响应）——完整可用
+^https://(?:www|m)\.youtube\.com/api/timedtext(?:\?|$) url script-response-body https://raw.githubusercontent.com/LamJIson/-/refs/heads/main/Script/youtube-dual-subs.js#subtitle_type=Translated&show_only_auto_translation=true
+
+[mitm]
+hostname = *.googlevideo.com, youtubei.googleapis.com, youtubei-att.googleapis.com, youtube.com, www.youtube.com, m.youtube.com, tv.youtube.com, s.youtube.com, music.youtube.com
