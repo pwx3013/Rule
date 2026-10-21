@@ -2,19 +2,7 @@
 # 参数配置：
 # blockUpload=true, blockShorts=true, autoHd=true, blockGames=true, blockVerticalLive=true,
 # jumpAhead=true, blockStore=true, nativeDownload=true, subtitle_type=Translated, auto_cc=true, show_only_auto_translation=true
-
 [rewrite_local]
-# 1. 基础广告拦截
-^https?:\/\/(www|s)\.youtube\.com\/api\/stats\/ads url reject-200
-^https?:\/\/(www|s)\.youtube\.com\/(pagead|ptracking) url reject-200
-
-# 2. 视频流与画质响应处理
-^https?:\/\/[\w-]+\.googlevideo\.com\/(?:videoplayback|initplayback) url script-response-header https://raw.githubusercontent.com/Maasea/sgmodule/master/Script/Youtube/dist/youtube.response.preview.js
-
-# 3. 主响应增强（明确设置：屏蔽Shorts=true、屏蔽上传=true、字幕语言=zh-Hans、内置开启后台播放）
-^https?:\/\/youtubei\.googleapis\.com\/youtubei\/v1\/(?:browse|next|player|search|reel\/reel_watch_sequence) url script-response-body https://raw.githubusercontent.com/Maasea/sgmodule/master/Script/Youtube/dist/youtube.response.preview.js, argument="{"captionLang":"zh-Hans","blockUpload":true,"blockShorts":true,"blockImmersive":true,"debug":false}"
-
-# 4. 请求头初始化（带字幕语言参数）
-^https?:\/\/[\w-]+\.googlevideo\.com\/initplayback.+&ack.* url script-request-body https://raw.githubusercontent.com/Maasea/sgmodule/master/Script/Youtube/dist/youtube.request.preview.js, argument="{"captionLang":"zh-Hans"}"
+^https:\/\/(www|m)\.youtube\.com\/api\/timedtext\? url script-response-body https://raw.githubusercontent.com/DualSubs/YouTube/main/dist/DualSubs.YouTube.min.js
 [mitm]
 hostname = *.googlevideo.com, youtubei.googleapis.com, www.youtube.com, m.youtube.com, s.youtube.com
