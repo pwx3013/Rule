@@ -25,7 +25,5 @@
 # 7. 日志响应
 ^http://youtube-logs\.invalid(?::80)?(?:\?[^#]*)?$ url script-echo-response https://raw.githubusercontent.com/teaoea/shell/main/plugins/YouTube/dist/request.min.js#background_playback=true&hide_home_shorts=true&translation_enabled=true&translation_target=zh-CN&playback_region=original&log_enabled=false&log_level=info&capture_budget=16&echo_response=true&log_enabled=true
 
-[filter_local]
-AND,((DEST-PORT,443),(PROTOCOL,UDP)),REJECT
 [mitm]
 hostname = youtubei.googleapis.com, youtubei-att.googleapis.com, youtube.com, www.youtube.com, m.youtube.com, music.youtube.com, *.googlevideo.com
