@@ -69,9 +69,12 @@ cat > "$XRAY_CONF" <<EOF
 EOF
 
 # Caddy 加 8443 站点: 只在 sites/ 里加文件, 不动主 Caddyfile 和 233boy/ 的配置
+# 注意: 匹配器必须是 $XHTTP_PATH* (前缀匹配)——XHTTP 会话路径是 /xhttp/<会话UUID> 与
+# /xhttp/<会话UUID>/<序号>, 只写 /xhttp 时 Caddy 只匹配精确路径, 真实会话全被挡在外面
+# (2026-11-06 实测: Egern 的请求已到 Caddy, 但 uri 是 /xhttp/ae481c82-.../0, Caddy 记 NOP、状态 0)
 cat > "$CADDY_SITE" <<EOF
 $DOMAIN:$PORT {
-    reverse_proxy $XHTTP_PATH 127.0.0.1:$LOCAL_PORT {
+    reverse_proxy ${XHTTP_PATH}* 127.0.0.1:$LOCAL_PORT {
         flush_interval -1
     }
 }
