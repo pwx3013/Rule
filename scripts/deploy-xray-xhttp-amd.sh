@@ -1,57 +1,49 @@
 #!/usr/bin/env bash
-# Xray-core VLESS + XHTTP (TLS) 一键部署 — 圣何塞AMD (192.9.146.146)
+# Xray-core VLESS + XHTTP 一键部署 — 圣何塞AMD (192.9.146.146)
 # 域名: lovey1314.eu.org, 端口: 8443, XHTTP path: /xhttp, mode: auto
-# 用法( root, Termius 里跑 ): bash deploy-xray-xhttp-amd.sh
-# UUID 在本机现生成、不进仓库, 跑完脚本最后会打印导入链接
 #
-# CF 优选 IP 用法:
-#   1. 申证书时域名必须是 DNS-only(灰云)且 A 记录指到本机, 脚本开头会校验,
-#      已是橙云就先切回灰云再跑, 跑完再切回橙云.
-#   2. 跑完后去 CF 把 lovey1314.eu.org 改成橙云代理(Proxied), 8443 是 CF 支持的
-#      HTTPS 端口, 之后客户端地址填 CF 优选 IP、端口 8443、SNI/Host 填域名就能走 CF.
-#   3. 证书续期: acme.sh standalone 需 80 端口直连本机, 橙云下续期会失败,
-#      到期前切回灰云跑一次 /root/.acme.sh/acme.sh --renew -d lovey1314.eu.org
-#      再切回橙云; 或改用 CF DNS API 方式续期.
+# 方案: Caddy(233boy 自动 TLS, v2.11.9, 占 80/443)反代 8443 -> 本地 Xray(127.0.0.1:10086, 明文 XHTTP)
+#   - 证书继续由 Caddy 管, 不用再申, 不占 80 端口
+#   - Trojan(443, Caddy 反代 /066da886-... 到 sing-box 127.0.0.1:31211)不受影响
+#   - 主 Caddyfile 写明不要编辑, 不动它; 只在 /etc/caddy/sites/ 里加站点文件
+#   - Caddy 重载: 先 reload, 不行(Admin 关了时)再 restart, Trojan 只闪断一下
+# 用法( root, Termius 里跑 ): bash deploy-xray-xhttp-amd.sh
+# UUID 在本机现生成、不进仓库; 重跑脚本会沿用已生成的 UUID, 跑完打印导入链接
 set -euo pipefail
 
 DOMAIN="lovey1314.eu.org"
 PORT=8443
+LOCAL_PORT=10086
 XHTTP_PATH="/xhttp"
 XRAY_CONF="/usr/local/etc/xray/config.json"
-CERT_DIR="/usr/local/etc/xray/cert"
+CADDY_SITE="/etc/caddy/sites/xhttp-8443.conf"
 
 [ "$(id -u)" -eq 0 ] || { echo "请用 root 运行"; exit 1; }
 
-# 端口占用检查
-for p in 80 "$PORT"; do
-  if ss -tlnp 2>/dev/null | grep -q ":$p "; then echo "端口 $p 已被占用, 先停掉占用它的服务再跑"; exit 1; fi
-done
+command -v caddy >/dev/null || { echo "没找到 caddy, 先确认 Caddy 已安装"; exit 1; }
+systemctl is-active --quiet caddy || { echo "caddy 服务没在跑, 先启动它再跑"; exit 1; }
+[ -d /etc/caddy/sites ] || { echo "没找到 /etc/caddy/sites 目录"; exit 1; }
 
-# 域名解析检查: 必须解析到本机公网 IP, 橙云代理下 HTTP-01 申证书会失败
-PUB_IP=$(curl -fsS4 https://ifconfig.me)
-DOM_IP=$(getent hosts "$DOMAIN" | awk '$1 ~ /^[0-9.]+$/ {print $1}' | head -n1)
-[ -n "$DOM_IP" ] && [ "$DOM_IP" = "$PUB_IP" ] || { echo "域名 $DOMAIN 解析到 ${DOM_IP:-<无结果>}, 本机公网 IP 是 $PUB_IP, 先把 A 记录指到本机并改成 DNS-only(灰云)再跑"; exit 1; }
+# 端口占用检查(重跑时已是自己占用的端口就跳过)
+if [ ! -f "$CADDY_SITE" ] && ss -tlnp 2>/dev/null | grep -q ":$PORT "; then
+  echo "端口 $PORT 已被占用, 先处理再跑"; exit 1
+fi
+if [ ! -f "$XRAY_CONF" ] && ss -tlnp 2>/dev/null | grep -q ":$LOCAL_PORT "; then
+  echo "端口 $LOCAL_PORT 已被占用, 先处理再跑"; exit 1
+fi
 
 apt-get update -qq
-apt-get install -y -qq curl socat cron ca-certificates
+apt-get install -y -qq curl ca-certificates unzip
 
 # 安装 Xray-core
 bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
 
-# acme.sh 申请证书 (standalone, 临时占 80 端口)
-export HOME=/root
-if [ ! -x /root/.acme.sh/acme.sh ]; then
-  curl https://get.acme.sh | sh -s email=admin@lovey1314.eu.org
+# 沿用已生成的 UUID, 没有就现生成
+UUID=""
+if [ -f "$XRAY_CONF" ]; then
+  UUID=$(grep -oP '"id":\s*"\K[^"]+' "$XRAY_CONF" | head -n1 || true)
 fi
-/root/.acme.sh/acme.sh --set-default-ca --server letsencrypt
-mkdir -p "$CERT_DIR"
-/root/.acme.sh/acme.sh --issue -d "$DOMAIN" --standalone
-/root/.acme.sh/acme.sh --install-cert -d "$DOMAIN" \
-  --key-file "$CERT_DIR/private.key" \
-  --fullchain-file "$CERT_DIR/fullchain.crt" \
-  --reloadcmd "systemctl restart xray"
-
-UUID=$(cat /proc/sys/kernel/random/uuid)
+[ -n "$UUID" ] || UUID=$(cat /proc/sys/kernel/random/uuid)
 
 mkdir -p /usr/local/etc/xray
 cat > "$XRAY_CONF" <<EOF
@@ -59,7 +51,8 @@ cat > "$XRAY_CONF" <<EOF
   "log": { "loglevel": "warning" },
   "inbounds": [
     {
-      "port": $PORT,
+      "listen": "127.0.0.1",
+      "port": $LOCAL_PORT,
       "protocol": "vless",
       "settings": {
         "clients": [ { "id": "$UUID" } ],
@@ -67,13 +60,7 @@ cat > "$XRAY_CONF" <<EOF
       },
       "streamSettings": {
         "network": "xhttp",
-        "security": "tls",
-        "xhttpSettings": { "path": "$XHTTP_PATH", "mode": "auto" },
-        "tlsSettings": {
-          "certificates": [
-            { "certificateFile": "$CERT_DIR/fullchain.crt", "keyFile": "$CERT_DIR/private.key" }
-          ]
-        }
+        "xhttpSettings": { "path": "$XHTTP_PATH", "mode": "auto" }
       }
     }
   ],
@@ -81,16 +68,33 @@ cat > "$XRAY_CONF" <<EOF
 }
 EOF
 
+# Caddy 加 8443 站点: 只在 sites/ 里加文件, 不动主 Caddyfile 和 233boy/ 的配置
+cat > "$CADDY_SITE" <<EOF
+$DOMAIN:$PORT {
+    reverse_proxy $XHTTP_PATH 127.0.0.1:$LOCAL_PORT {
+        flush_interval -1
+    }
+}
+EOF
+
+caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile || { echo "Caddy 配置校验失败, 已停下, 新加的站点文件未生效"; rm -f "$CADDY_SITE"; exit 1; }
+
 systemctl enable xray
 systemctl restart xray
 sleep 2
 systemctl is-active --quiet xray || { echo "xray 启动失败, 看日志: journalctl -u xray -n 50"; exit 1; }
+
+systemctl reload caddy || systemctl restart caddy
+sleep 2
+systemctl is-active --quiet caddy || { echo "caddy 重载/重启后异常, 看日志: journalctl -u caddy -n 50"; exit 1; }
 ss -tlnp | grep -q ":$PORT " || { echo "端口 $PORT 没起来"; exit 1; }
+
+# 链路自检: 经 Caddy 请求一次 /xhttp, 只要拿到 HTTP 状态码就说明通了
+CODE=$(curl -sk --resolve "$DOMAIN:$PORT:127.0.0.1" "https://$DOMAIN:$PORT$XHTTP_PATH" -o /dev/null -w "%{http_code}" || true)
+echo "链路自检: https://$DOMAIN:$PORT$XHTTP_PATH 返回 HTTP $CODE (400/404 都算通, 000 才是不通)"
 
 echo
 echo "部署完成, 直连导入链接:"
 echo "vless://$UUID@$DOMAIN:$PORT?encryption=none&security=tls&sni=$DOMAIN&type=xhttp&path=%2Fxhttp&mode=auto#AMD-XHTTP"
 echo
-echo "走 CF 优选 IP: 先去 CF 把 $DOMAIN 改成橙云代理, 再把上面链接里的 $DOMAIN"
-echo "换成任一 CF 优选 IP(端口不变, 仍是 $PORT, SNI 已带域名不用改), 例如:"
-echo "vless://$UUID@<CF优选IP>:$PORT?encryption=none&security=tls&sni=$DOMAIN&type=xhttp&path=%2Fxhttp&mode=auto&host=$DOMAIN#AMD-XHTTP-CF"
+echo "走 CF 优选 IP: 把域名改回橙云代理, 再把上面链接里的 $DOMAIN 换成任一 CF 优选 IP(端口不变, 仍是 $PORT)"
