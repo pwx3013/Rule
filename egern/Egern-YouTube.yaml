@@ -166,15 +166,6 @@ scriptings:
     max_size: -1
     body_required: true
     binary_body: true
-- http_response:
-    name: youtube.response.ui
-    match: ^https:\/\/youtubei\.googleapis\.com\/youtubei\/v1\/(?:navigation\/resolve_url|browse|next|player|search|reel\/reel_watch_sequence|guide|account\/get_setting|get_watch|log_event|config)(?:\?.*)?$
-    script_url: https://raw.githubusercontent.com/IBL3ND/js/08e611c81bf15ec16db9cae35520541448c85739/youtube-response.js
-    env:
-      _compat.$argument: '{"blockUpload":{{{屏蔽上传按钮}}},"blockShorts":{{{blockShorts}}},"blockGames":{{{blockGames}}},"blockVerticalLive":{{{blockVerticalLive}}},"jumpAhead":{{{jumpAhead}}},"autoHd":{{{autoHd}}},"blockStore":{{{blockStore}}}}'
-    max_size: -1
-    body_required: true
-    binary_body: true
 - http_request:
     name: youtube.request.init.maasea
     match: ^https?:\/\/[\w-]+\.googlevideo\.com\/initplayback.+&ack.*
