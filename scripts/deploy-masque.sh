@@ -6,9 +6,14 @@
 #   sudo bash deploy-masque.sh                  # 默认端口 443
 #   sudo bash deploy-masque.sh 8443             # 自定义端口(位置参数)
 #   MASQUE_PORT=8443 sudo bash deploy-masque.sh # 自定义端口(环境变量)
+#   MASQUE_PORTS=8443,8444,8445 sudo bash deploy-masque.sh  # 端口跳跃: 服务端逐个端口建监听器,
+#                                                            # 客户端 Surge 用 port-hopping 参数轮换
 #
 # 可选环境变量:
 #   MASQUE_PORT      监听端口, 默认 443
+#   MASQUE_PORTS     端口跳跃列表, 逗号分隔, 如 8443,8444,8445 (设置后 MASQUE_PORT/位置参数失效,
+#                    第一个端口为主监听, 其余用 add-listener 追加; 只能是几个离散端口,
+#                    不能是 20000-30000 这种大段, 服务端每个端口要单独一个监听器)
 #   MASQUE_VERSION   指定版本, 如 v0.14.22 (默认自动取最新 Release)
 #   MASQUE_USER      认证用户名, 默认 masque
 #   MASQUE_PASSWORD  认证密码, 默认随机生成 (16 字节 hex)
@@ -30,12 +35,23 @@ BIN_NAME="masque-server"
 # ---- 0. root 检查 ----
 [[ $EUID -ne 0 ]] && { echo "请用 root 运行: sudo bash $0" >&2; exit 1; }
 
-# ---- 1. 端口 (位置参数优先, 其次环境变量, 默认 443) ----
-PORT="${1:-${MASQUE_PORT:-443}}"
-case "$PORT" in
-    ""|*[!0-9]*) echo "端口必须是 1-65535 的数字: $PORT" >&2; exit 1 ;;
-esac
-[[ "$PORT" -lt 1 || "$PORT" -gt 65535 ]] && { echo "端口必须在 1-65535 之间: $PORT" >&2; exit 1; }
+# ---- 1. 端口 (MASQUE_PORTS 优先, 其次位置参数/MASQUE_PORT, 默认 443) ----
+if [[ -n "${MASQUE_PORTS:-}" ]]; then
+    IFS=',' read -r -a PORT_LIST <<< "$MASQUE_PORTS"
+else
+    PORT_LIST=("${1:-${MASQUE_PORT:-443}}")
+fi
+for p in "${PORT_LIST[@]}"; do
+    case "$p" in
+        ""|*[!0-9]*) echo "端口必须是 1-65535 的数字: $p" >&2; exit 1 ;;
+    esac
+    [[ "$p" -lt 1 || "$p" -gt 65535 ]] && { echo "端口必须在 1-65535 之间: $p" >&2; exit 1; }
+done
+# 去重
+PORT_LIST=($(printf '%s\n' "${PORT_LIST[@]}" | awk '!seen[$0]++'))
+PORT="${PORT_LIST[0]}"
+EXTRA_PORTS=("${PORT_LIST[@]:1}")
+HOP_LIST=$(IFS=';'; echo "${PORT_LIST[*]}")
 
 # ---- 2. 已安装检查 ----
 if [[ -f /etc/masque/masque.toml ]]; then
@@ -85,7 +101,7 @@ if [[ -z "$VERSION" ]]; then
     VERSION=$(curl -s --max-time 15 "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null | grep -o '"tag_name": *"[^"]*"' | head -1 | cut -d'"' -f4 || true)
     [[ -z "$VERSION" ]] && VERSION="$FALLBACK_VERSION"
 fi
-echo "部署 $REPO $VERSION ($ARCH), 端口 UDP $PORT, init: $INIT"
+echo "部署 $REPO $VERSION ($ARCH), 端口 UDP ${PORT_LIST[*]} (跳跃: ${#PORT_LIST[@]} 个), init: $INIT"
 
 # ---- 7. 下载 + SHA 校验 ----
 TARBALL="masque-${VERSION}-linux-${ARCH}.tar.gz"
@@ -175,6 +191,22 @@ EOF
     rc-service masque start
 fi
 
+# ---- 9b. 端口跳跃: 其余端口各加一个监听器 (同账号同密码) ----
+if [[ ${#EXTRA_PORTS[@]} -gt 0 ]]; then
+    echo "追加跳跃端口: ${EXTRA_PORTS[*]}"
+    for p in "${EXTRA_PORTS[@]}"; do
+        printf '%s' "$AUTH_PASS" | masque-server --config /etc/masque/masque.toml add-listener \
+            --transport "$TRANSPORT" --listen-addr "0.0.0.0:$p" \
+            --mode basic --username "$AUTH_USER" --password-stdin --yes
+    done
+    echo "重启服务以绑定全部端口..."
+    if [[ "$INIT" == systemd ]]; then
+        systemctl restart masque
+    else
+        rc-service masque restart
+    fi
+fi
+
 # ---- 10. 自检 + 输出 ----
 echo
 if [[ "$INIT" == systemd ]]; then
@@ -185,19 +217,31 @@ fi
 echo
 echo "================ MASQUE 已部署 ================"
 echo "服务器 : $TLS_NAME"
-echo "端口   : $PORT (UDP, HTTP/3)"
+if [[ ${#PORT_LIST[@]} -gt 1 ]]; then
+    echo "端口   : ${PORT_LIST[*]} (UDP, HTTP/3, 跳跃)"
+else
+    echo "端口   : $PORT (UDP, HTTP/3)"
+fi
 echo "用户名 : $AUTH_USER"
 echo "密码   : $AUTH_PASS"
 echo "         (密码只显示这一次, 请保存好)"
 echo
 echo "Surge 配置 (自签证书, 须开 skip-cert-verify):"
-echo "Masque = masque, $TLS_NAME, $PORT, username=$AUTH_USER, password=$AUTH_PASS, skip-cert-verify=true"
+if [[ ${#PORT_LIST[@]} -gt 1 ]]; then
+    echo "Masque = masque, $TLS_NAME, $PORT, username=$AUTH_USER, password=$AUTH_PASS, skip-cert-verify=true, port-hopping=$HOP_LIST, port-hopping-interval=30"
+else
+    echo "Masque = masque, $TLS_NAME, $PORT, username=$AUTH_USER, password=$AUTH_PASS, skip-cert-verify=true"
+fi
 echo
 echo "测试 (需 masque-probe):"
 echo "printf '%s' '$AUTH_PASS' | masque-probe $TLS_NAME:$PORT --username $AUTH_USER --password-stdin"
 echo
 echo "注意:"
-echo "- 云厂商安全组须放行 UDP $PORT (Oracle/AWS 控制台里开)"
+if [[ ${#PORT_LIST[@]} -gt 1 ]]; then
+    echo "- 云厂商安全组须放行全部跳跃端口 UDP ${PORT_LIST[*]} (Oracle/AWS 控制台里开)"
+else
+    echo "- 云厂商安全组须放行 UDP $PORT (Oracle/AWS 控制台里开)"
+fi
 echo "- Surge iOS 5.22.0+/Mac 6.9.0+ 才支持 MASQUE; Egern 不支持"
 echo "- 改密码: masque-server --config /etc/masque/masque.toml set-password --username $AUTH_USER"
 echo "- 改端口: masque-server --config /etc/masque/masque.toml add-listener (再重启服务)"
