@@ -9,6 +9,7 @@
 #   HY2_PASSWORD  认证密码 (默认随机生成)
 #   HOP_INTERVAL  客户端建议的跳跃间隔秒数 (默认 30, 仅用于打印客户端配置)
 #   HY2_IP        公网 IP (默认自动检测; 检测失败时须用此变量指定)
+#   HY2_SNI       TLS SNI 与证书 CN (默认公网 IP; 想用 www.bing.com 就设 HY2_SNI=www.bing.com)
 # 跑完后记得在云控制台安全组/安全列表放行 UDP: 主端口 + 跳跃端口段
 # ==============================================================================
 set -euo pipefail
@@ -103,11 +104,12 @@ echo "==> ${HY2_VER}" | head -n1
 [[ -n "$HY2_PASSWORD" ]] || HY2_PASSWORD="$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-24)"
 PUB_IP="${HY2_IP:-$(curl -fsSL --max-time 10 https://api.ipify.org || curl -fsSL --max-time 10 https://ifconfig.me || echo '')}"
 [[ -n "$PUB_IP" ]] || { echo "!! 检测公网 IP 失败, 请用 HY2_IP=你的公网IP 指定"; exit 1; }
+HY2_SNI="${HY2_SNI:-$PUB_IP}"
 
 mkdir -p /etc/hysteria
 openssl req -x509 -nodes -newkey rsa:2048 \
   -keyout /etc/hysteria/server.key -out /etc/hysteria/server.crt \
-  -days 3650 -subj "/CN=${PUB_IP}" >/dev/null 2>&1
+  -days 3650 -subj "/CN=${HY2_SNI}" >/dev/null 2>&1
 chmod 600 /etc/hysteria/server.key
 FP="$(openssl x509 -in /etc/hysteria/server.crt -noout -fingerprint -sha256 \
   | sed 's/.*=//; s/://g')"
@@ -277,13 +279,13 @@ cat > "$INFO_FILE" <<EOF
     server: ${PUB_IP}
     port: ${HY2_PORT}
     auth: ${HY2_PASSWORD}
-    sni: ${PUB_IP}
+    sni: ${HY2_SNI}
     fingerprint_sha256: ${FP}
     port_hopping: ${HY2_PORT},${HOP_START}-${HOP_END}
     port_hopping_interval: ${HOP_INTERVAL}
 
 ---- 通用 hy2:// 链接 (v2rayNG / Nekoray 等, 多端口逗号分隔) ----
-hysteria2://${HY2_PASSWORD}@${PUB_IP}:${HY2_PORT},${HOP_START}-${HOP_END}/?sni=${PUB_IP}&insecure=1#hy2-hop
+hysteria2://${HY2_PASSWORD}@${PUB_IP}:${HY2_PORT},${HOP_START}-${HOP_END}/?sni=${HY2_SNI}&insecure=1#hy2-hop
 
 ---- 备注 ----
 1. Oracle Cloud 控制台「安全列表/安全组」必须放行 UDP ${HY2_PORT} 和 UDP ${HOP_START}-${HOP_END} 入站,
