@@ -19,6 +19,9 @@
 #   MASQUE_PASSWORD  认证密码, 默认随机生成 (16 字节 hex)
 #   MASQUE_TLS_NAME  证书用的域名或公网 IP, 默认自动检测公网 IP
 #   MASQUE_TRANSPORT http3 (默认) 或 http2
+#   MASQUE_UDP_BUFFER_MB  UDP 缓冲 MB, 默认 32; 如需改小, 如 MASQUE_UDP_BUFFER_MB=16
+#                          同时写内核 rmem_max/wmem_max 与 [quic] udp_recv/send_buffer_size,
+#                          否则新装默认 2MB 会在约 75Mbps 断流 (2026-11-13 实测)
 #
 # 说明:
 # - systemd 的机器直接调用官方 install.sh (支持 MASQUE_LISTEN_PORT 自定义端口);
@@ -206,6 +209,27 @@ if [[ ${#EXTRA_PORTS[@]} -gt 0 ]]; then
         rc-service masque restart
     fi
 fi
+
+# ---- 9c. UDP 缓冲: 内核 + [quic] 一起调 (只调一边会被另一边砍掉) ----
+UDP_MB="${MASQUE_UDP_BUFFER_MB:-32}"
+case "$UDP_MB" in
+    ''|*[!0-9]*) echo "MASQUE_UDP_BUFFER_MB 必须是数字 MB: $UDP_MB" >&2; exit 1 ;;
+esac
+UDP_BYTES=$((UDP_MB * 1048576))
+cat > /etc/sysctl.d/99-masque.conf <<EOF
+net.core.rmem_max = $UDP_BYTES
+net.core.wmem_max = $UDP_BYTES
+EOF
+sysctl --system >/dev/null 2>&1 || sysctl -w net.core.rmem_max="$UDP_BYTES" net.core.wmem_max="$UDP_BYTES"
+sed -i -E "s|^[#[:space:]]*udp_recv_buffer_size[[:space:]]*=.*|udp_recv_buffer_size = $UDP_BYTES|; s|^[#[:space:]]*udp_send_buffer_size[[:space:]]*=.*|udp_send_buffer_size = $UDP_BYTES|" /etc/masque/masque.toml
+grep -q "^udp_recv_buffer_size = $UDP_BYTES" /etc/masque/masque.toml || { echo "UDP 缓冲写入失败: masque.toml 里没找到 udp_recv_buffer_size" >&2; exit 1; }
+grep -q "^udp_send_buffer_size = $UDP_BYTES" /etc/masque/masque.toml || { echo "UDP 缓冲写入失败: masque.toml 里没找到 udp_send_buffer_size" >&2; exit 1; }
+if [[ "$INIT" == systemd ]]; then
+    systemctl restart masque
+else
+    rc-service masque restart
+fi
+echo "UDP 缓冲: 内核与 [quic] 均 ${UDP_MB}MB ($UDP_BYTES)"
 
 # ---- 10. 自检 + 输出 ----
 echo
