@@ -32,10 +32,13 @@ UUID=$(grep -oP '"id":\s*"\K[^"]+' "$XRAY_CONF" | head -n1 || true)
 [ -n "$UUID" ] || UUID=$(cat /proc/sys/kernel/random/uuid)
 
 # 生成 REALITY x25519 密钥对
+# xray x25519 输出格式因版本而异, 常见两种:
+#   新版: PrivateKey: ... / Password (PublicKey): ... / Hash32: ...
+#   旧版: Private key: ... / Public key: ...
 KEYS=$(xray x25519)
-PRIVATE_KEY=$(echo "$KEYS" | sed -n 's/^Private key: //p')
-PUBLIC_KEY=$(echo "$KEYS" | sed -n 's/^Public key: //p')
-[ -n "$PRIVATE_KEY" ] && [ -n "$PUBLIC_KEY" ] || { echo "xray x25519 生成密钥失败"; exit 1; }
+PRIVATE_KEY=$(echo "$KEYS" | sed -n -e 's/^PrivateKey: //p' -e 's/^Private key: //p' | head -n1)
+PUBLIC_KEY=$(echo "$KEYS" | sed -n -e 's/^Password (PublicKey): //p' -e 's/^Public key: //p' | head -n1)
+[ -n "$PRIVATE_KEY" ] && [ -n "$PUBLIC_KEY" ] || { echo "xray x25519 生成密钥失败, 输出如下:"; echo "$KEYS"; exit 1; }
 
 SID=$(openssl rand -hex 4)
 XPATH="/$(openssl rand -hex 8)"
